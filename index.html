@@ -12,7 +12,7 @@
   #stage { position: fixed; inset: 0; overflow: hidden; background: #111; }
   #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
   #panelWrap { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
-  #panel { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%);
+  #panel { position: absolute; left: 0; top: 0; transform-origin: 0 0; transform: translate(-50%, -50%);
     max-width: none; width: 60vw; height: auto; opacity: 0.95; user-select: none; -webkit-user-drag: none; }
 
   #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -75,6 +75,8 @@
   <div class="row">
     <label class="slider">大きさ <input id="size" type="range" min="20" max="140" value="60"></label>
     <label class="slider">濃さ <input id="alpha" type="range" min="20" max="100" value="95"></label>
+    <label class="slider">距離 <input id="dist" type="range" min="30" max="300" value="100"></label>
+    <label class="slider">目の高さ <input id="eye" type="range" min="-100" max="100" value="0"></label>
   </div>
 </div>
 
@@ -121,8 +123,12 @@
     note("画像を" + panels.length + "枚読み込みました(ファイル名順)");
   });
 
-  $("size").addEventListener("input", function (e) { panel.style.width = e.target.value + "vw"; });
+  $("size").addEventListener("input", function (e) { panel.style.width = e.target.value + "vw"; update(); });
   $("alpha").addEventListener("input", function (e) { panel.style.opacity = e.target.value / 100; });
+  $("dist").addEventListener("input", function (e) { distScale = e.target.value / 100; update(); });
+  $("eye").addEventListener("input", function (e) { eyeLevel = e.target.value / 100; update(); });
+  $("eye").addEventListener("dblclick", function (e) { e.target.value = 0; eyeLevel = 0; update(); });
+  window.addEventListener("resize", update);
 
   function note(t) {
     msg.textContent = t; msg.style.display = "block";
@@ -142,34 +148,72 @@
   // ---------- 向きセンサー(ジャイロ):コマを「その方向」に固定する ----------
   // 3自由度(向きだけ)。歩いて近づく動きは反映されません。
   var pinOn = false, haveSensor = false;
-  var anchor = null;        // 置いた時の向き {yaw, pitch}
-  var latest = null;        // 最新の向き {yaw, pitch}
-  var PX_PER_DEG = window.innerWidth / 50; // カメラの横の視野を約50度と仮定
+  var anchor = null;        // 置いた時の向き {yaw, pitch}(度)
+  var latest = null;        // 最新の向き {yaw, pitch, R}
+  var HFOV = 50;            // カメラの横の視野角(度)の仮定
+  var distScale = 1;        // 距離スライダー(1 = 初期の大きさ)
+  var eyeLevel = 0;         // 目の高さスライダー(-1 = 低い / 0 = 同じ / +1 = 高い)
 
-  function wrap180(d) { while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
+  function rad(d) { return d * Math.PI / 180; }
+
+  // 端末の姿勢(alpha, beta, gamma)から回転行列 R = Rz(a) Rx(b) Ry(g) を作る(端末座標 -> 地面座標)
+  function rotFromEuler(a, b, g) {
+    var ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
+    return [
+      [ca * cg - sa * sb * sg, -sa * cb, ca * sg + sa * sb * cg],
+      [sa * cg + ca * sb * sg,  ca * cb, sa * sg - ca * sb * cg],
+      [-cb * sg,                sb,      cb * cg]
+    ];
+  }
+  // 地面座標のベクトル v を、端末座標へ(R の転置をかける)
+  function toDev(R, v) {
+    return [
+      R[0][0] * v[0] + R[1][0] * v[1] + R[2][0] * v[2],
+      R[0][1] * v[0] + R[1][1] * v[1] + R[2][1] * v[2],
+      R[0][2] * v[0] + R[1][2] * v[1] + R[2][2] * v[2]
+    ];
+  }
+  // 端末座標(x右, y上, z手前) -> CSS座標(x右, y下, z手前)
+  function toCss(v) { return [v[0], -v[1], v[2]]; }
 
   function onOrient(e) {
     if (e.alpha == null || e.beta == null || e.gamma == null) return;
     haveSensor = true;
-    var D = Math.PI / 180;
-    var a = e.alpha * D, b = e.beta * D, g = e.gamma * D;
-    // カメラが向いている方向(地面基準)。縦持ちで真上を向いても計算が崩れにくい式
-    var zx = Math.cos(a) * Math.sin(g) + Math.sin(a) * Math.sin(b) * Math.cos(g);
-    var zy = Math.sin(a) * Math.sin(g) - Math.cos(a) * Math.sin(b) * Math.cos(g);
-    var zz = Math.cos(b) * Math.cos(g);
-    var dx = -zx, dy = -zy, dz = -zz;
-    var yaw = Math.atan2(dx, dy) / D;
-    var pitch = Math.asin(Math.max(-1, Math.min(1, dz))) / D;
-    latest = { yaw: yaw, pitch: pitch };
+    var R = rotFromEuler(rad(e.alpha), rad(e.beta), rad(e.gamma));
+    // カメラが向いている方向(地面基準)= 端末の -z 軸
+    var dx = -R[0][2], dy = -R[1][2], dz = -R[2][2];
+    var yaw = Math.atan2(dx, dy) * 180 / Math.PI;
+    var pitch = Math.asin(Math.max(-1, Math.min(1, dz))) * 180 / Math.PI;
+    latest = { yaw: yaw, pitch: pitch, R: R };
     if (pinOn) update();
     hud.textContent = "向き " + yaw.toFixed(0) + "° / 上下 " + pitch.toFixed(0) + "°";
   }
 
+  // コマを「地面の上のある位置に立っている板」として、遠近法で描く(向きの変化だけ反映。端末の移動は反映されない)
   function update() {
-    if (!pinOn || !anchor || !latest) { wrap.style.transform = "translate(0px, 0px)"; return; }
-    var dx = wrap180(anchor.yaw - latest.yaw) * PX_PER_DEG;   // 左を向くと、コマは右へ動く
-    var dy = (latest.pitch - anchor.pitch) * PX_PER_DEG;      // 上を向くと、コマは下へ動く
-    wrap.style.transform = "translate(" + dx.toFixed(1) + "px, " + dy.toFixed(1) + "px)";
+    var W = window.innerWidth;
+    var f = (W / 2) / Math.tan(rad(HFOV / 2));          // 焦点距離(px)
+    wrap.style.perspective = f + "px";
+    if (!pinOn || !anchor || !latest) {
+      panel.style.transform = "translate(-50%, -50%)";
+      panel.style.visibility = "visible";
+      return;
+    }
+    var y0 = rad(anchor.yaw), p0 = rad(anchor.pitch);
+    var D = f * distScale;                                // 板までの距離
+    var C = [D * Math.sin(y0) * Math.cos(p0), D * Math.cos(y0) * Math.cos(p0), D * Math.sin(p0)];
+    C[2] -= eyeLevel * D * 0.5;                           // 目を上げると板は相対的に下へ、下げると上へ
+    var s = Math.sin(y0), c = Math.cos(y0);
+    var X = [c, -s, 0];     // 板の右
+    var Y = [0, 0, -1];     // 板の下
+    var Z = [-s, -c, 0];    // 板の正面(置いた場所の方を向く)
+    var R = latest.R;
+    var cX = toCss(toDev(R, X)), cY = toCss(toDev(R, Y)), cZ = toCss(toDev(R, Z)), cC = toCss(toDev(R, C));
+    // カメラの後ろ側にあるときは隠す
+    if (cC[2] > -10) { panel.style.visibility = "hidden"; return; }
+    panel.style.visibility = "visible";
+    var m = [cX[0], cX[1], cX[2], 0, cY[0], cY[1], cY[2], 0, cZ[0], cZ[1], cZ[2], 0, cC[0], cC[1], cC[2] + f, 1];
+    panel.style.transform = "matrix3d(" + m.map(function (v) { return v.toFixed(5); }).join(",") + ") translate(-50%, -50%)";
   }
 
   async function enableSensor() {
