@@ -3,55 +3,70 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>ARコミック テスト版</title>
+<title>AR スケッチ</title>
 <style>
-  :root { --ui: rgba(20, 24, 30, 0.78); --fg: #f2f5f8; --accent: #6fb1ff; }
+  :root { --ui: rgba(20, 24, 30, 0.82); --fg: #f2f5f8; --accent: #6fb1ff; --line: rgba(255,255,255,0.25); }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; background: #000; color: var(--fg);
     font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", system-ui, sans-serif; overflow: hidden; }
   #stage { position: fixed; inset: 0; overflow: hidden; background: #111; }
   #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-  #panelWrap { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
-  #panel { position: absolute; left: 0; top: 0; transform-origin: 0 0; transform: translate(-50%, -50%);
-    max-width: none; width: 60vw; height: auto; opacity: 0.95; user-select: none; -webkit-user-drag: none; }
+  #wrap { position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+  #scene { position: absolute; left: 0; top: 0; width: 0; height: 0;
+    -webkit-transform-style: preserve-3d; transform-style: preserve-3d; }
+  .item { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none;
+    -webkit-user-drag: none; user-select: none; -webkit-user-select: none; touch-action: manipulation;
+    -webkit-touch-callout: none; visibility: hidden; }
+  .item.sel { outline: 3px solid var(--accent); outline-offset: -3px; }
 
   #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 16px; background: #10151b; padding: 24px; text-align: center; z-index: 5; }
   #start h1 { font-size: 1.3rem; margin: 0; }
   #start p { margin: 0; max-width: 28em; line-height: 1.7; color: #b9c4cf; font-size: 0.92rem; }
-  button, label.btn { font: inherit; font-weight: 700; color: #0b1118; background: var(--accent); border: 0;
-    border-radius: 6px; padding: 12px 16px; min-height: 44px; cursor: pointer; display: inline-flex;
-    align-items: center; justify-content: center; }
-  button.sub, label.btn.sub { background: var(--ui); color: var(--fg); border: 1px solid rgba(255,255,255,0.25); }
-  button.on { background: var(--accent); color: #0b1118; }
-  button:focus-visible, label.btn:focus-within { outline: 3px solid #fff; outline-offset: 2px; }
 
-  #bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: none; flex-direction: column; gap: 10px;
-    background: var(--ui); backdrop-filter: blur(6px);
-    padding: 12px max(12px, env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); }
+  button, label.btn { font: inherit; font-weight: 700; color: #0b1118; background: var(--accent); border: 0;
+    border-radius: 6px; padding: 10px 14px; min-height: 44px; cursor: pointer; display: inline-flex;
+    align-items: center; justify-content: center; text-align: center; }
+  button.sub, label.btn.sub { background: rgba(255,255,255,0.12); color: var(--fg); border: 1px solid var(--line); }
+  button.on { background: var(--accent); color: #0b1118; border-color: var(--accent); }
+  button:disabled { opacity: 0.4; }
+  button:focus-visible, label.btn:focus-within { outline: 3px solid #fff; outline-offset: 2px; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: none; flex-direction: column; gap: 8px;
+    background: var(--ui); backdrop-filter: blur(6px); max-height: 46vh; overflow-y: auto;
+    padding: 10px max(12px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); }
   #bar .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-  #bar .grow { flex: 1; min-width: 0; }
-  #idx { min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }
-  .slider { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: #cfd8e1; flex: 1; min-width: 140px; }
+  #ui { display: flex; flex-direction: column; gap: 8px; }
+  #ui[hidden] { display: none; }
+  #selLabel { font-size: 0.85rem; color: #cfd8e1; flex: 1; min-width: 0; }
+  .hint { font-size: 0.78rem; color: #aab6c2; flex: 1; min-width: 12em; }
+  details#more summary { cursor: pointer; padding: 8px 0; font-size: 0.85rem; color: #cfd8e1; }
+  details#more .row { margin-top: 8px; }
+  #lib { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
+  #lib button { padding: 0; min-height: 0; height: 60px; flex: 0 0 auto; border: 2px solid var(--line); background:
+    repeating-conic-gradient(#8a929a 0% 25%, #b5bcc3 0% 50%) 50% / 12px 12px; }
+  #lib img { height: 100%; width: auto; display: block; max-width: 120px; object-fit: contain; }
+  .slider { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: #cfd8e1; flex: 1 1 45%; min-width: 150px; }
   .slider input { flex: 1; min-width: 0; }
+  .slider output { min-width: 3.4em; text-align: right; font-variant-numeric: tabular-nums; }
   #msg { position: fixed; left: 12px; right: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); z-index: 4;
     background: var(--ui); padding: 8px 12px; border-radius: 6px; font-size: 0.82rem; display: none; line-height: 1.5; }
   #hud { position: fixed; right: 12px; top: calc(56px + env(safe-area-inset-top, 0px)); z-index: 4;
     font-size: 0.72rem; color: #cfd8e1; background: var(--ui); padding: 4px 8px; border-radius: 4px; display: none;
-    font-variant-numeric: tabular-nums; }
-  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+    font-variant-numeric: tabular-nums; text-align: right; line-height: 1.5; }
 </style>
 </head>
 <body>
 <div id="stage">
   <video id="cam" playsinline muted autoplay></video>
-  <div id="panelWrap"><img id="panel" alt="コマ"></div>
+  <div id="wrap"><div id="scene"></div></div>
 </div>
 
 <div id="start">
-  <h1>ARコミック テスト版</h1>
-  <p>カメラの映像の上にコマを重ねます。「はじめる」を押すと、カメラとセンサーの許可を聞かれます。
-     映像は端末の外には送られません。</p>
+  <h1>AR スケッチ</h1>
+  <p>カメラ映像の上に、イラストを何枚でも置けます。置いたイラストはその場所に残るので、歩いたり向きを変えたりすると、見え方が変わります。
+     「はじめる」を押すと、カメラとセンサーの許可を聞かれます。映像は端末の外には送られません。</p>
   <button id="startBtn" type="button">はじめる</button>
   <p id="startNote"></p>
 </div>
@@ -61,81 +76,296 @@
 
 <div id="bar">
   <div class="row">
-    <button id="prev" class="sub" type="button">前のコマ</button>
-    <span id="idx">1 / 1</span>
-    <button id="next" type="button">次のコマ</button>
-    <label class="btn sub grow">画像を選ぶ
-      <input id="files" type="file" accept="image/*" multiple>
-    </label>
+    <button id="toggleUI" class="sub" type="button">操作を隠す</button>
+    <span id="selLabel">選択中: なし</span>
   </div>
-  <div class="row">
-    <button id="pin" class="sub" type="button">向きを固定: オフ</button>
-    <button id="place" class="sub" type="button" disabled>ここに置き直す</button>
-  </div>
-  <div class="row">
-    <label class="slider">大きさ <input id="size" type="range" min="20" max="140" value="60"></label>
-    <label class="slider">濃さ <input id="alpha" type="range" min="20" max="100" value="95"></label>
-    <label class="slider">距離 <input id="dist" type="range" min="30" max="300" value="100"></label>
-    <label class="slider">目の高さ <input id="eye" type="range" min="-100" max="100" value="0"></label>
+  <div id="ui">
+    <div class="row">
+      <label class="btn sub">画像を追加
+        <input id="files" type="file" accept="image/*" multiple>
+      </label>
+    </div>
+    <div id="lib"></div>
+    <div class="row">
+      <button id="replace" class="sub" type="button" disabled>選択中を置き直す</button>
+      <button id="del" class="sub" type="button" disabled>選択中を削除</button>
+      <button id="clear" class="sub" type="button">全部消す</button>
+    </div>
+    <details id="more">
+    <summary>詳しい設定</summary>
+    <div class="row">
+      <label class="slider">置く距離 <input id="placeDist" type="range" min="5" max="80" value="20"><output id="placeDistO"></output></label>
+      <label class="slider">大きさ <input id="size" type="range" min="2" max="60" value="12" disabled><output id="sizeO"></output></label>
+      <label class="slider">濃さ <input id="alpha" type="range" min="20" max="100" value="95" disabled><output id="alphaO"></output></label>
+      <label class="slider">目の高さ <input id="eye" type="range" min="-100" max="100" value="0"><output id="eyeO"></output></label>
+      <label class="slider">歩幅 <input id="step" type="range" min="40" max="100" value="70"><output id="stepO"></output></label>
+    </div>
+    <div class="row">
+      <button id="pdr" class="on" type="button">歩いて動かす: オン</button>
+      <button id="zero" class="sub" type="button">位置を0に戻す</button>
+    </div>
+    </details>
   </div>
 </div>
 
 <script>
 (function () {
   var $ = function (id) { return document.getElementById(id); };
-  var cam = $("cam"), panel = $("panel"), wrap = $("panelWrap");
-  var msg = $("msg"), hud = $("hud");
+  var cam = $("cam"), wrap = $("wrap"), scene = $("scene"), msg = $("msg"), hud = $("hud");
 
-  // ---------- コマ(最初は仮の絵。「画像を選ぶ」で自分のイラストに置き換え) ----------
-  var panels = [];
-  var cur = 0;
+  function rad(d) { return d * Math.PI / 180; }
+  function note(t) {
+    msg.textContent = t; msg.style.display = "block";
+    clearTimeout(note._t); note._t = setTimeout(function () { msg.style.display = "none"; }, 3000);
+  }
 
+  // =====================================================================
+  // 数学:姿勢(alpha,beta,gamma) -> 回転行列、板をカメラ座標へ
+  //   世界座標: x=東, y=北, z=上(単位はメートル)。スタート地点が原点。
+  // =====================================================================
+  function rotFromEuler(a, b, g) {
+    var ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
+    return [
+      [ca * cg - sa * sb * sg, -sa * cb, ca * sg + sa * sb * cg],
+      [sa * cg + ca * sb * sg,  ca * cb, sa * sg - ca * sb * cg],
+      [-cb * sg,                sb,      cb * cg]
+    ];
+  }
+  function toDev(R, v) {
+    return [
+      R[0][0] * v[0] + R[1][0] * v[1] + R[2][0] * v[2],
+      R[0][1] * v[0] + R[1][1] * v[1] + R[2][1] * v[2],
+      R[0][2] * v[0] + R[1][2] * v[1] + R[2][2] * v[2]
+    ];
+  }
+  function toCss(v) { return [v[0], -v[1], v[2]]; }
+
+  // 板の位置 pos(m)、板の向き yawDeg、カメラ位置 camPos(m)、焦点距離 f(px) から CSS の matrix3d を作る。
+  // カメラの後ろにあるときは null。
+  function viewMatrix(R, pos, yawDeg, camPos, f) {
+    var y0 = rad(yawDeg), s = Math.sin(y0), c = Math.cos(y0);
+    var Cw = [(pos[0] - camPos[0]) * f, (pos[1] - camPos[1]) * f, (pos[2] - camPos[2]) * f];
+    var cX = toCss(toDev(R, [c, -s, 0]));     // 板の右
+    var cY = toCss(toDev(R, [0, 0, -1]));     // 板の下
+    var cZ = toCss(toDev(R, [-s, -c, 0]));    // 板の正面
+    var cC = toCss(toDev(R, Cw));
+    if (cC[2] > -0.15 * f) return null;
+    return [cX[0], cX[1], cX[2], 0, cY[0], cY[1], cY[2], 0, cZ[0], cZ[1], cZ[2], 0, cC[0], cC[1], cC[2] + f, 1];
+  }
+
+  // 歩いている向き。カメラが前を向いているときはカメラの向き、下を向いているときはスマホの上端の向き。
+  function walkHeading(R) {
+    var dx = -R[0][2], dy = -R[1][2], dz = -R[2][2];
+    if (Math.abs(dz) < 0.85) return Math.atan2(dx, dy) * 180 / Math.PI;
+    return Math.atan2(R[0][1], R[1][1]) * 180 / Math.PI;
+  }
+
+  // =====================================================================
+  // 状態
+  // =====================================================================
+  var HFOV = 50;                 // カメラの横の視野角(度)の仮定
+  var latest = null;             // {yaw, pitch, R}
+  var P = { x: 0, y: 0 };        // 推定したいまの位置(m)
+  var steps = 0;
+  var pdrOn = true;
+  var eyeZ = 0;                  // 目の高さのずれ(m)
+  var stepLen = 0.7;             // 歩幅(m)
+  var placeDist = 2.0;           // 置く距離(m)
+  var items = [], sel = null, uid = 0;
+  var lib = [];                  // {url}
+
+  // =====================================================================
+  // 画像ライブラリ(最初は仮の絵。「画像を追加」で自分のイラストを追加)
+  // =====================================================================
   function makePlaceholder(n) {
     var c = document.createElement("canvas");
-    c.width = 800; c.height = 560;
+    c.width = 600; c.height = 420;
     var g = c.getContext("2d");
-    g.fillStyle = "#ffffff"; g.fillRect(0, 0, 800, 560);
-    g.lineWidth = 10; g.strokeStyle = "#111"; g.strokeRect(5, 5, 790, 550);
-    g.fillStyle = "#e9edf2"; g.fillRect(40, 300, 720, 200);
-    g.fillStyle = "#111"; g.font = "bold 220px sans-serif"; g.textAlign = "center";
-    g.fillText(String(n), 400, 260);
-    g.font = "bold 40px sans-serif";
-    g.fillText("仮のコマ(「画像を選ぶ」で差し替え)", 400, 420);
+    g.fillStyle = "#ffffff"; g.fillRect(0, 0, 600, 420);
+    g.lineWidth = 10; g.strokeStyle = "#111"; g.strokeRect(5, 5, 590, 410);
+    g.fillStyle = "#111"; g.font = "bold 190px sans-serif"; g.textAlign = "center";
+    g.fillText(String(n), 300, 250);
+    g.font = "bold 30px sans-serif"; g.fillText("仮の絵", 300, 340);
     return c.toDataURL("image/png");
   }
-  for (var i = 1; i <= 3; i++) panels.push(makePlaceholder(i));
-
-  function show() {
-    panel.src = panels[cur];
-    $("idx").textContent = (cur + 1) + " / " + panels.length;
+  function addToLib(url) {
+    lib.push({ url: url });
+    var b = document.createElement("button");
+    b.type = "button"; b.className = "sub";
+    b.setAttribute("aria-label", "この画像を置く");
+    var im = new Image(); im.src = url; im.alt = "";
+    b.appendChild(im);
+    b.addEventListener("click", function () { place(url); });
+    $("lib").appendChild(b);
   }
-  $("next").addEventListener("click", function () { cur = Math.min(cur + 1, panels.length - 1); show(); });
-  $("prev").addEventListener("click", function () { cur = Math.max(cur - 1, 0); show(); });
-  show();
+  for (var i = 1; i <= 3; i++) addToLib(makePlaceholder(i));
 
   $("files").addEventListener("change", function (e) {
     var fs = Array.prototype.slice.call(e.target.files || []);
     if (!fs.length) return;
     fs.sort(function (a, b) { return a.name.localeCompare(b.name, "ja", { numeric: true }); });
-    panels.forEach(function (u) { if (u.indexOf("blob:") === 0) URL.revokeObjectURL(u); });
-    panels = fs.map(function (f) { return URL.createObjectURL(f); });
-    cur = 0; show();
-    note("画像を" + panels.length + "枚読み込みました(ファイル名順)");
+    fs.forEach(function (f) { addToLib(URL.createObjectURL(f)); });
+    e.target.value = "";
+    note("画像を" + fs.length + "枚追加しました。下の一覧からタップして置いてください");
   });
 
-  $("size").addEventListener("input", function (e) { panel.style.width = e.target.value + "vw"; update(); });
-  $("alpha").addEventListener("input", function (e) { panel.style.opacity = e.target.value / 100; });
-  $("dist").addEventListener("input", function (e) { distScale = e.target.value / 100; update(); });
-  $("eye").addEventListener("input", function (e) { eyeLevel = e.target.value / 100; update(); });
-  $("eye").addEventListener("dblclick", function (e) { e.target.value = 0; eyeLevel = 0; update(); });
-  window.addEventListener("resize", update);
+  // =====================================================================
+  // 板を置く・選ぶ・消す
+  // =====================================================================
+  function camPos() { return [P.x, P.y, eyeZ]; }
 
-  function note(t) {
-    msg.textContent = t; msg.style.display = "block";
-    clearTimeout(note._t); note._t = setTimeout(function () { msg.style.display = "none"; }, 3500);
+  function gazePos(D) {
+    var y = rad(latest.yaw), p = rad(latest.pitch);
+    return [P.x + D * Math.sin(y) * Math.cos(p), P.y + D * Math.cos(y) * Math.cos(p), eyeZ + D * Math.sin(p)];
   }
 
-  // ---------- カメラ ----------
+  function place(url) {
+    if (!latest) { note("センサーの値がまだ取れていません。スマホを少し動かしてからもう一度押してください"); return; }
+    var D = placeDist;
+    var it = { id: ++uid, wM: Math.round(D * 0.6 * 10) / 10, op: 0.95, yaw: latest.yaw, pos: gazePos(D) };
+    var el = new Image();
+    el.className = "item"; el.draggable = false; el.alt = ""; el.src = url;
+    el.addEventListener("pointerdown", function (ev) { ev.stopPropagation(); select(it); });
+    it.el = el;
+    scene.appendChild(el);
+    items.push(it);
+    select(it);
+    update();
+  }
+
+  function select(it) {
+    sel = it;
+    items.forEach(function (x) { x.el.classList.toggle("sel", x === sel); });
+    var on = !!sel;
+    $("replace").disabled = !on; $("del").disabled = !on; $("size").disabled = !on; $("alpha").disabled = !on;
+    if (on) {
+      $("size").value = Math.round(sel.wM * 10); $("alpha").value = Math.round(sel.op * 100);
+      $("selLabel").textContent = "選択中: " + (items.indexOf(sel) + 1) + "枚目 / 全" + items.length + "枚";
+    } else {
+      $("selLabel").textContent = "選択中: なし";
+    }
+    sync();
+  }
+
+  $("replace").addEventListener("click", function () {
+    if (!sel || !latest) return;
+    sel.pos = gazePos(placeDist); sel.yaw = latest.yaw; update();
+    note("いま向いている先に置き直しました");
+  });
+  $("del").addEventListener("click", function () {
+    if (!sel) return;
+    scene.removeChild(sel.el); items.splice(items.indexOf(sel), 1); select(null);
+  });
+  $("clear").addEventListener("click", function () {
+    items.forEach(function (x) { scene.removeChild(x.el); }); items = []; select(null);
+  });
+
+  // =====================================================================
+  // スライダー
+  // =====================================================================
+  function sync() {
+    $("placeDistO").textContent = placeDist.toFixed(1) + "m";
+    $("sizeO").textContent = sel ? sel.wM.toFixed(1) + "m" : "-";
+    $("alphaO").textContent = sel ? Math.round(sel.op * 100) + "%" : "-";
+    $("eyeO").textContent = (eyeZ >= 0 ? "+" : "") + eyeZ.toFixed(1) + "m";
+    $("stepO").textContent = stepLen.toFixed(2) + "m";
+  }
+  $("placeDist").addEventListener("input", function (e) { placeDist = e.target.value / 10; sync(); });
+  $("size").addEventListener("input", function (e) { if (sel) { sel.wM = e.target.value / 10; sync(); update(); } });
+  $("alpha").addEventListener("input", function (e) { if (sel) { sel.op = e.target.value / 100; sync(); update(); } });
+  $("eye").addEventListener("input", function (e) { eyeZ = e.target.value / 100 * 0.8; sync(); update(); });
+  $("eye").addEventListener("dblclick", function (e) { e.target.value = 0; eyeZ = 0; sync(); update(); });
+  $("step").addEventListener("input", function (e) { stepLen = e.target.value / 100; sync(); });
+  sync();
+
+  $("pdr").addEventListener("click", function () {
+    pdrOn = !pdrOn;
+    var b = $("pdr"); b.textContent = "歩いて動かす: " + (pdrOn ? "オン" : "オフ"); b.classList.toggle("on", pdrOn);
+  });
+  $("zero").addEventListener("click", function () {
+    P.x = 0; P.y = 0; steps = 0; update(); hudUpdate(); note("位置を0に戻しました(スタート地点にいるときに押してください)");
+  });
+  $("toggleUI").addEventListener("click", function () {
+    var ui = $("ui"); ui.hidden = !ui.hidden;
+    $("toggleUI").textContent = ui.hidden ? "操作を出す" : "操作を隠す";
+  });
+
+  // =====================================================================
+  // 描画
+  // =====================================================================
+  function update() {
+    var W = window.innerWidth;
+    var f = (W / 2) / Math.tan(rad(HFOV / 2));
+    wrap.style.perspective = f + "px";
+    var R = latest && latest.R;
+    var cp = camPos();
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i], el = it.el;
+      el.style.width = (it.wM * f).toFixed(1) + "px";
+      el.style.opacity = it.op;
+      if (!R) { el.style.visibility = "hidden"; continue; }
+      var m = viewMatrix(R, it.pos, it.yaw, cp, f);
+      if (!m) { el.style.visibility = "hidden"; continue; }
+      el.style.visibility = "visible";
+      el.style.transform = "matrix3d(" + m.map(function (v) { return v.toFixed(4); }).join(",") + ") translate(-50%, -50%)";
+    }
+  }
+  window.addEventListener("resize", update);
+
+  function hudUpdate() {
+    if (!latest) return;
+    hud.innerHTML = "向き " + latest.yaw.toFixed(0) + "° / 上下 " + latest.pitch.toFixed(0) + "°<br>" +
+      "歩数 " + steps + " / 位置 (" + P.x.toFixed(1) + ", " + P.y.toFixed(1) + ")m";
+  }
+
+  // =====================================================================
+  // センサー
+  // =====================================================================
+  function onOrient(e) {
+    if (e.alpha == null || e.beta == null || e.gamma == null) return;
+    var R = rotFromEuler(rad(e.alpha), rad(e.beta), rad(e.gamma));
+    var dx = -R[0][2], dy = -R[1][2], dz = -R[2][2];
+    latest = {
+      yaw: Math.atan2(dx, dy) * 180 / Math.PI,
+      pitch: Math.asin(Math.max(-1, Math.min(1, dz))) * 180 / Math.PI,
+      R: R
+    };
+    update(); hudUpdate();
+  }
+
+  // 歩数の検出(加速度の大きさの揺れから)
+  var base = 9.8, smooth = 0, armed = true, lastStep = 0;
+  function onMotion(e) {
+    var a = e.accelerationIncludingGravity;
+    if (!a || a.x == null) return;
+    var mag = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+    base = base * 0.98 + mag * 0.02;
+    smooth = smooth * 0.6 + (mag - base) * 0.4;
+    var now = performance.now();
+    if (smooth < 0.3) armed = true;
+    if (armed && smooth > 1.1 && now - lastStep > 330) {
+      armed = false; lastStep = now;
+      if (pdrOn && latest) {
+        var h = rad(walkHeading(latest.R));
+        P.x += stepLen * Math.sin(h); P.y += stepLen * Math.cos(h);
+        steps++;
+        update(); hudUpdate();
+      }
+    }
+  }
+
+  async function enableSensors() {
+    var reqs = [];
+    try { if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") reqs.push(DeviceMotionEvent.requestPermission()); } catch (e) {}
+    try { if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") reqs.push(DeviceOrientationEvent.requestPermission()); } catch (e) {}
+    var res = await Promise.all(reqs.map(function (p) { return p.catch(function () { return "denied"; }); }));
+    var ok = res.every(function (r) { return r === "granted"; });
+    window.addEventListener("deviceorientation", onOrient, true);
+    window.addEventListener("devicemotion", onMotion, true);
+    hud.style.display = "block";
+    return ok;
+  }
+
   async function startCamera() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("このブラウザではカメラAPIが使えません");
     var stream = await navigator.mediaDevices.getUserMedia({
@@ -145,118 +375,15 @@
     await cam.play();
   }
 
-  // ---------- 向きセンサー(ジャイロ):コマを「その方向」に固定する ----------
-  // 3自由度(向きだけ)。歩いて近づく動きは反映されません。
-  var pinOn = false, haveSensor = false;
-  var anchor = null;        // 置いた時の向き {yaw, pitch}(度)
-  var latest = null;        // 最新の向き {yaw, pitch, R}
-  var HFOV = 50;            // カメラの横の視野角(度)の仮定
-  var distScale = 1;        // 距離スライダー(1 = 初期の大きさ)
-  var eyeLevel = 0;         // 目の高さスライダー(-1 = 低い / 0 = 同じ / +1 = 高い)
-
-  function rad(d) { return d * Math.PI / 180; }
-
-  // 端末の姿勢(alpha, beta, gamma)から回転行列 R = Rz(a) Rx(b) Ry(g) を作る(端末座標 -> 地面座標)
-  function rotFromEuler(a, b, g) {
-    var ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
-    return [
-      [ca * cg - sa * sb * sg, -sa * cb, ca * sg + sa * sb * cg],
-      [sa * cg + ca * sb * sg,  ca * cb, sa * sg - ca * sb * cg],
-      [-cb * sg,                sb,      cb * cg]
-    ];
-  }
-  // 地面座標のベクトル v を、端末座標へ(R の転置をかける)
-  function toDev(R, v) {
-    return [
-      R[0][0] * v[0] + R[1][0] * v[1] + R[2][0] * v[2],
-      R[0][1] * v[0] + R[1][1] * v[1] + R[2][1] * v[2],
-      R[0][2] * v[0] + R[1][2] * v[1] + R[2][2] * v[2]
-    ];
-  }
-  // 端末座標(x右, y上, z手前) -> CSS座標(x右, y下, z手前)
-  function toCss(v) { return [v[0], -v[1], v[2]]; }
-
-  function onOrient(e) {
-    if (e.alpha == null || e.beta == null || e.gamma == null) return;
-    haveSensor = true;
-    var R = rotFromEuler(rad(e.alpha), rad(e.beta), rad(e.gamma));
-    // カメラが向いている方向(地面基準)= 端末の -z 軸
-    var dx = -R[0][2], dy = -R[1][2], dz = -R[2][2];
-    var yaw = Math.atan2(dx, dy) * 180 / Math.PI;
-    var pitch = Math.asin(Math.max(-1, Math.min(1, dz))) * 180 / Math.PI;
-    latest = { yaw: yaw, pitch: pitch, R: R };
-    if (pinOn) update();
-    hud.textContent = "向き " + yaw.toFixed(0) + "° / 上下 " + pitch.toFixed(0) + "°";
-  }
-
-  // コマを「地面の上のある位置に立っている板」として、遠近法で描く(向きの変化だけ反映。端末の移動は反映されない)
-  function update() {
-    var W = window.innerWidth;
-    var f = (W / 2) / Math.tan(rad(HFOV / 2));          // 焦点距離(px)
-    wrap.style.perspective = f + "px";
-    if (!pinOn || !anchor || !latest) {
-      panel.style.transform = "translate(-50%, -50%)";
-      panel.style.visibility = "visible";
-      return;
-    }
-    var y0 = rad(anchor.yaw), p0 = rad(anchor.pitch);
-    var D = f * distScale;                                // 板までの距離
-    var C = [D * Math.sin(y0) * Math.cos(p0), D * Math.cos(y0) * Math.cos(p0), D * Math.sin(p0)];
-    C[2] -= eyeLevel * D * 0.5;                           // 目を上げると板は相対的に下へ、下げると上へ
-    var s = Math.sin(y0), c = Math.cos(y0);
-    var X = [c, -s, 0];     // 板の右
-    var Y = [0, 0, -1];     // 板の下
-    var Z = [-s, -c, 0];    // 板の正面(置いた場所の方を向く)
-    var R = latest.R;
-    var cX = toCss(toDev(R, X)), cY = toCss(toDev(R, Y)), cZ = toCss(toDev(R, Z)), cC = toCss(toDev(R, C));
-    // カメラの後ろ側にあるときは隠す
-    if (cC[2] > -10) { panel.style.visibility = "hidden"; return; }
-    panel.style.visibility = "visible";
-    var m = [cX[0], cX[1], cX[2], 0, cY[0], cY[1], cY[2], 0, cZ[0], cZ[1], cZ[2], 0, cC[0], cC[1], cC[2] + f, 1];
-    panel.style.transform = "matrix3d(" + m.map(function (v) { return v.toFixed(5); }).join(",") + ") translate(-50%, -50%)";
-  }
-
-  async function enableSensor() {
-    try {
-      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
-        var r = await DeviceOrientationEvent.requestPermission();
-        if (r !== "granted") throw new Error("センサーの許可が出ませんでした");
-      }
-      window.addEventListener("deviceorientation", onOrient, true);
-      hud.style.display = "block";
-      return true;
-    } catch (err) { note("センサーを使えません: " + err.message); return false; }
-  }
-
-  $("pin").addEventListener("click", async function () {
-    var btn = $("pin");
-    if (!pinOn) {
-      if (!haveSensor) {
-        var ok = await enableSensor();
-        if (!ok) return;
-        await new Promise(function (r) { setTimeout(r, 400); });
-        if (!latest) { note("センサーの値がまだ取れません。もう一度押してください"); return; }
-      }
-      pinOn = true; anchor = { yaw: latest.yaw, pitch: latest.pitch };
-      btn.textContent = "向きを固定: オン"; btn.classList.add("on"); $("place").disabled = false;
-      note("いまの向きにコマを固定しました。スマホを動かして確かめてください");
-    } else {
-      pinOn = false; anchor = null;
-      btn.textContent = "向きを固定: オフ"; btn.classList.remove("on"); $("place").disabled = true;
-      update();
-    }
-  });
-  $("place").addEventListener("click", function () {
-    if (latest) { anchor = { yaw: latest.yaw, pitch: latest.pitch }; update(); note("いまの向きに置き直しました"); }
-  });
-
-  // ---------- はじめる ----------
   $("startBtn").addEventListener("click", async function () {
     $("startBtn").disabled = true;
+    var sensorsOk = await enableSensors();
     try {
       await startCamera();
       $("start").style.display = "none";
       $("bar").style.display = "flex";
+      if (!sensorsOk) note("センサーの許可が出ていません。Safariの設定でモーションと画面の向きのアクセスを許可してください");
+      else note("スマホを少し動かしてから、下の画像をタップすると、いま向いている先に置けます。置いた画像をタップすると選択できます");
     } catch (err) {
       $("startBtn").disabled = false;
       $("startNote").textContent = "カメラを開始できませんでした: " + err.message +
@@ -264,6 +391,9 @@
     }
   });
   if (!window.isSecureContext) $("startNote").textContent = "HTTPSではないページです。カメラは使えません。";
+
+  // テスト用に公開(画面には影響しません)
+  window.__arsketch = { viewMatrix: viewMatrix, rotFromEuler: rotFromEuler, walkHeading: walkHeading };
 })();
 </script>
 </body>
