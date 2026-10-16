@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>ARコミック テスト版</title>
+<style>
+  :root { --ui: rgba(20, 24, 30, 0.78); --fg: #f2f5f8; --accent: #6fb1ff; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: #000; color: var(--fg);
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", system-ui, sans-serif; overflow: hidden; }
+  #stage { position: fixed; inset: 0; overflow: hidden; background: #111; }
+  #cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+  #panelWrap { position: absolute; left: 50%; top: 50%; width: 0; height: 0; pointer-events: none; }
+  #panel { position: absolute; left: 0; top: 0; transform: translate(-50%, -50%);
+    max-width: none; width: 60vw; height: auto; opacity: 0.95; user-select: none; -webkit-user-drag: none; }
+
+  #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px; background: #10151b; padding: 24px; text-align: center; z-index: 5; }
+  #start h1 { font-size: 1.3rem; margin: 0; }
+  #start p { margin: 0; max-width: 28em; line-height: 1.7; color: #b9c4cf; font-size: 0.92rem; }
+  button, label.btn { font: inherit; font-weight: 700; color: #0b1118; background: var(--accent); border: 0;
+    border-radius: 6px; padding: 12px 16px; min-height: 44px; cursor: pointer; display: inline-flex;
+    align-items: center; justify-content: center; }
+  button.sub, label.btn.sub { background: var(--ui); color: var(--fg); border: 1px solid rgba(255,255,255,0.25); }
+  button.on { background: var(--accent); color: #0b1118; }
+  button:focus-visible, label.btn:focus-within { outline: 3px solid #fff; outline-offset: 2px; }
+
+  #bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 3; display: none; flex-direction: column; gap: 10px;
+    background: var(--ui); backdrop-filter: blur(6px);
+    padding: 12px max(12px, env(safe-area-inset-right, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); }
+  #bar .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #bar .grow { flex: 1; min-width: 0; }
+  #idx { min-width: 4.5em; text-align: center; font-variant-numeric: tabular-nums; }
+  .slider { display: flex; align-items: center; gap: 8px; font-size: 0.8rem; color: #cfd8e1; flex: 1; min-width: 140px; }
+  .slider input { flex: 1; min-width: 0; }
+  #msg { position: fixed; left: 12px; right: 12px; top: calc(12px + env(safe-area-inset-top, 0px)); z-index: 4;
+    background: var(--ui); padding: 8px 12px; border-radius: 6px; font-size: 0.82rem; display: none; line-height: 1.5; }
+  #hud { position: fixed; right: 12px; top: calc(56px + env(safe-area-inset-top, 0px)); z-index: 4;
+    font-size: 0.72rem; color: #cfd8e1; background: var(--ui); padding: 4px 8px; border-radius: 4px; display: none;
+    font-variant-numeric: tabular-nums; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <div id="panelWrap"><img id="panel" alt="コマ"></div>
+</div>
+
+<div id="start">
+  <h1>ARコミック テスト版</h1>
+  <p>カメラの映像の上にコマを重ねます。「はじめる」を押すと、カメラとセンサーの許可を聞かれます。
+     映像は端末の外には送られません。</p>
+  <button id="startBtn" type="button">はじめる</button>
+  <p id="startNote"></p>
+</div>
+
+<div id="msg"></div>
+<div id="hud"></div>
+
+<div id="bar">
+  <div class="row">
+    <button id="prev" class="sub" type="button">前のコマ</button>
+    <span id="idx">1 / 1</span>
+    <button id="next" type="button">次のコマ</button>
+    <label class="btn sub grow">画像を選ぶ
+      <input id="files" type="file" accept="image/*" multiple>
+    </label>
+  </div>
+  <div class="row">
+    <button id="pin" class="sub" type="button">向きを固定: オフ</button>
+    <button id="place" class="sub" type="button" disabled>ここに置き直す</button>
+  </div>
+  <div class="row">
+    <label class="slider">大きさ <input id="size" type="range" min="20" max="140" value="60"></label>
+    <label class="slider">濃さ <input id="alpha" type="range" min="20" max="100" value="95"></label>
+  </div>
+</div>
+
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var cam = $("cam"), panel = $("panel"), wrap = $("panelWrap");
+  var msg = $("msg"), hud = $("hud");
+
+  // ---------- コマ(最初は仮の絵。「画像を選ぶ」で自分のイラストに置き換え) ----------
+  var panels = [];
+  var cur = 0;
+
+  function makePlaceholder(n) {
+    var c = document.createElement("canvas");
+    c.width = 800; c.height = 560;
+    var g = c.getContext("2d");
+    g.fillStyle = "#ffffff"; g.fillRect(0, 0, 800, 560);
+    g.lineWidth = 10; g.strokeStyle = "#111"; g.strokeRect(5, 5, 790, 550);
+    g.fillStyle = "#e9edf2"; g.fillRect(40, 300, 720, 200);
+    g.fillStyle = "#111"; g.font = "bold 220px sans-serif"; g.textAlign = "center";
+    g.fillText(String(n), 400, 260);
+    g.font = "bold 40px sans-serif";
+    g.fillText("仮のコマ(「画像を選ぶ」で差し替え)", 400, 420);
+    return c.toDataURL("image/png");
+  }
+  for (var i = 1; i <= 3; i++) panels.push(makePlaceholder(i));
+
+  function show() {
+    panel.src = panels[cur];
+    $("idx").textContent = (cur + 1) + " / " + panels.length;
+  }
+  $("next").addEventListener("click", function () { cur = Math.min(cur + 1, panels.length - 1); show(); });
+  $("prev").addEventListener("click", function () { cur = Math.max(cur - 1, 0); show(); });
+  show();
+
+  $("files").addEventListener("change", function (e) {
+    var fs = Array.prototype.slice.call(e.target.files || []);
+    if (!fs.length) return;
+    fs.sort(function (a, b) { return a.name.localeCompare(b.name, "ja", { numeric: true }); });
+    panels.forEach(function (u) { if (u.indexOf("blob:") === 0) URL.revokeObjectURL(u); });
+    panels = fs.map(function (f) { return URL.createObjectURL(f); });
+    cur = 0; show();
+    note("画像を" + panels.length + "枚読み込みました(ファイル名順)");
+  });
+
+  $("size").addEventListener("input", function (e) { panel.style.width = e.target.value + "vw"; });
+  $("alpha").addEventListener("input", function (e) { panel.style.opacity = e.target.value / 100; });
+
+  function note(t) {
+    msg.textContent = t; msg.style.display = "block";
+    clearTimeout(note._t); note._t = setTimeout(function () { msg.style.display = "none"; }, 3500);
+  }
+
+  // ---------- カメラ ----------
+  async function startCamera() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error("このブラウザではカメラAPIが使えません");
+    var stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false
+    });
+    cam.srcObject = stream;
+    await cam.play();
+  }
+
+  // ---------- 向きセンサー(ジャイロ):コマを「その方向」に固定する ----------
+  // 3自由度(向きだけ)。歩いて近づく動きは反映されません。
+  var pinOn = false, haveSensor = false;
+  var anchor = null;        // 置いた時の向き {yaw, pitch}
+  var latest = null;        // 最新の向き {yaw, pitch}
+  var PX_PER_DEG = window.innerWidth / 50; // カメラの横の視野を約50度と仮定
+
+  function wrap180(d) { while (d > 180) d -= 360; while (d < -180) d += 360; return d; }
+
+  function onOrient(e) {
+    if (e.alpha == null || e.beta == null || e.gamma == null) return;
+    haveSensor = true;
+    var D = Math.PI / 180;
+    var a = e.alpha * D, b = e.beta * D, g = e.gamma * D;
+    // カメラが向いている方向(地面基準)。縦持ちで真上を向いても計算が崩れにくい式
+    var zx = Math.cos(a) * Math.sin(g) + Math.sin(a) * Math.sin(b) * Math.cos(g);
+    var zy = Math.sin(a) * Math.sin(g) - Math.cos(a) * Math.sin(b) * Math.cos(g);
+    var zz = Math.cos(b) * Math.cos(g);
+    var dx = -zx, dy = -zy, dz = -zz;
+    var yaw = Math.atan2(dx, dy) / D;
+    var pitch = Math.asin(Math.max(-1, Math.min(1, dz))) / D;
+    latest = { yaw: yaw, pitch: pitch };
+    if (pinOn) update();
+    hud.textContent = "向き " + yaw.toFixed(0) + "° / 上下 " + pitch.toFixed(0) + "°";
+  }
+
+  function update() {
+    if (!pinOn || !anchor || !latest) { wrap.style.transform = "translate(0px, 0px)"; return; }
+    var dx = wrap180(anchor.yaw - latest.yaw) * PX_PER_DEG;   // 左を向くと、コマは右へ動く
+    var dy = (latest.pitch - anchor.pitch) * PX_PER_DEG;      // 上を向くと、コマは下へ動く
+    wrap.style.transform = "translate(" + dx.toFixed(1) + "px, " + dy.toFixed(1) + "px)";
+  }
+
+  async function enableSensor() {
+    try {
+      if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+        var r = await DeviceOrientationEvent.requestPermission();
+        if (r !== "granted") throw new Error("センサーの許可が出ませんでした");
+      }
+      window.addEventListener("deviceorientation", onOrient, true);
+      hud.style.display = "block";
+      return true;
+    } catch (err) { note("センサーを使えません: " + err.message); return false; }
+  }
+
+  $("pin").addEventListener("click", async function () {
+    var btn = $("pin");
+    if (!pinOn) {
+      if (!haveSensor) {
+        var ok = await enableSensor();
+        if (!ok) return;
+        await new Promise(function (r) { setTimeout(r, 400); });
+        if (!latest) { note("センサーの値がまだ取れません。もう一度押してください"); return; }
+      }
+      pinOn = true; anchor = { yaw: latest.yaw, pitch: latest.pitch };
+      btn.textContent = "向きを固定: オン"; btn.classList.add("on"); $("place").disabled = false;
+      note("いまの向きにコマを固定しました。スマホを動かして確かめてください");
+    } else {
+      pinOn = false; anchor = null;
+      btn.textContent = "向きを固定: オフ"; btn.classList.remove("on"); $("place").disabled = true;
+      update();
+    }
+  });
+  $("place").addEventListener("click", function () {
+    if (latest) { anchor = { yaw: latest.yaw, pitch: latest.pitch }; update(); note("いまの向きに置き直しました"); }
+  });
+
+  // ---------- はじめる ----------
+  $("startBtn").addEventListener("click", async function () {
+    $("startBtn").disabled = true;
+    try {
+      await startCamera();
+      $("start").style.display = "none";
+      $("bar").style.display = "flex";
+    } catch (err) {
+      $("startBtn").disabled = false;
+      $("startNote").textContent = "カメラを開始できませんでした: " + err.message +
+        "(Safariの設定でカメラが許可されているか、HTTPSのページで開いているか確認してください)";
+    }
+  });
+  if (!window.isSecureContext) $("startNote").textContent = "HTTPSではないページです。カメラは使えません。";
+})();
+</script>
+</body>
+</html>
