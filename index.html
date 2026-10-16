@@ -17,7 +17,11 @@
   .item { position: absolute; left: 0; top: 0; transform-origin: 0 0; max-width: none;
     -webkit-user-drag: none; user-select: none; -webkit-user-select: none; touch-action: manipulation;
     -webkit-touch-callout: none; visibility: hidden; }
+  .item.fixed { -webkit-backface-visibility: hidden; backface-visibility: hidden; }
   .item.sel { outline: 3px solid var(--accent); outline-offset: -3px; }
+  #gridEl { pointer-events: none; border: 2px solid rgba(111,177,255,0.9); background-color: rgba(111,177,255,0.10);
+    background-image: linear-gradient(to right, rgba(111,177,255,0.55) 1px, transparent 1px),
+                      linear-gradient(to bottom, rgba(111,177,255,0.55) 1px, transparent 1px); }
 
   #start { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 16px; background: #10151b; padding: 24px; text-align: center; z-index: 5; }
@@ -38,9 +42,10 @@
     padding: 10px max(12px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); }
   #bar .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   #ui { display: flex; flex-direction: column; gap: 8px; }
-  #ui[hidden] { display: none; }
+  #bar [hidden] { display: none !important; }
+  #planeUI { display: flex; flex-direction: column; gap: 8px; }
   #selLabel { font-size: 0.85rem; color: #cfd8e1; flex: 1; min-width: 0; }
-  .hint { font-size: 0.78rem; color: #aab6c2; flex: 1; min-width: 12em; }
+  .lbl { font-size: 0.8rem; color: #cfd8e1; }
   details#more summary { cursor: pointer; padding: 8px 0; font-size: 0.85rem; color: #cfd8e1; }
   details#more .row { margin-top: 8px; }
   #lib { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
@@ -84,8 +89,26 @@
       <label class="btn sub">画像を追加
         <input id="files" type="file" accept="image/*" multiple>
       </label>
+      <span class="lbl">貼る面:</span>
+      <button id="modeFree" class="on" type="button">自由</button>
+      <button id="modeWall" class="sub" type="button">壁</button>
+      <button id="modeFloor" class="sub" type="button">床</button>
     </div>
     <div id="lib"></div>
+    <div id="planeUI" hidden>
+      <div class="row" id="wallUI">
+        <label class="slider">壁までの距離 <input id="wallDist" type="range" min="10" max="150" value="30"><output id="wallDistO"></output></label>
+        <label class="slider">壁の角度 <input id="wallAng" type="range" min="-80" max="80" value="0"><output id="wallAngO"></output></label>
+        <button id="wallSet" class="sub" type="button">壁を、いまの向きで設定</button>
+      </div>
+      <div class="row" id="floorUI">
+        <label class="slider">カメラの高さ(床から) <input id="floorH" type="range" min="8" max="20" value="14"><output id="floorHO"></output></label>
+      </div>
+      <div class="row">
+        <button id="gridBtn" class="on" type="button">グリッドを表示: オン</button>
+        <span class="lbl">グリッドが本物の壁(床)に重なるよう合わせてから、画像をタップして貼ります</span>
+      </div>
+    </div>
     <div class="row">
       <button id="replace" class="sub" type="button" disabled>選択中を置き直す</button>
       <button id="del" class="sub" type="button" disabled>選択中を削除</button>
@@ -94,7 +117,7 @@
     <details id="more">
     <summary>詳しい設定</summary>
     <div class="row">
-      <label class="slider">置く距離 <input id="placeDist" type="range" min="5" max="80" value="20"><output id="placeDistO"></output></label>
+      <label class="slider">置く距離(自由) <input id="placeDist" type="range" min="5" max="80" value="20"><output id="placeDistO"></output></label>
       <label class="slider">大きさ <input id="size" type="range" min="2" max="60" value="12" disabled><output id="sizeO"></output></label>
       <label class="slider">濃さ <input id="alpha" type="range" min="20" max="100" value="95" disabled><output id="alphaO"></output></label>
       <label class="slider">目の高さ <input id="eye" type="range" min="-100" max="100" value="0"><output id="eyeO"></output></label>
@@ -116,7 +139,7 @@
   function rad(d) { return d * Math.PI / 180; }
   function note(t) {
     msg.textContent = t; msg.style.display = "block";
-    clearTimeout(note._t); note._t = setTimeout(function () { msg.style.display = "none"; }, 3000);
+    clearTimeout(note._t); note._t = setTimeout(function () { msg.style.display = "none"; }, 3500);
   }
 
   // =====================================================================
@@ -140,16 +163,22 @@
   }
   function toCss(v) { return [v[0], -v[1], v[2]]; }
 
-  // 板の位置 pos(m)、板の向き yawDeg、カメラ位置 camPos(m)、焦点距離 f(px) から CSS の matrix3d を作る。
-  // カメラの後ろにあるときは null。
-  function viewMatrix(R, pos, yawDeg, camPos, f) {
-    var y0 = rad(yawDeg), s = Math.sin(y0), c = Math.cos(y0);
+  // 板の向き(右X・下Y・正面Z)。kind: 'wall'(立っている板) / 'floor'(床に寝かせた板)
+  function axesFor(kind, yawDeg) {
+    var y = rad(yawDeg), s = Math.sin(y), c = Math.cos(y);
+    if (kind === "floor") return { X: [c, -s, 0], Y: [-s, -c, 0], Z: [0, 0, 1] };
+    return { X: [c, -s, 0], Y: [0, 0, -1], Z: [-s, -c, 0] };
+  }
+
+  // 板の位置 pos(m)、板の向き axes、カメラ位置 camPos(m)、焦点距離 f(px) から CSS の matrix3d を作る。
+  // カメラの後ろ側にあるときは null。
+  function viewMatrix(R, pos, axes, camPos, f) {
     var Cw = [(pos[0] - camPos[0]) * f, (pos[1] - camPos[1]) * f, (pos[2] - camPos[2]) * f];
-    var cX = toCss(toDev(R, [c, -s, 0]));     // 板の右
-    var cY = toCss(toDev(R, [0, 0, -1]));     // 板の下
-    var cZ = toCss(toDev(R, [-s, -c, 0]));    // 板の正面
+    var cX = toCss(toDev(R, axes.X));
+    var cY = toCss(toDev(R, axes.Y));
+    var cZ = toCss(toDev(R, axes.Z));
     var cC = toCss(toDev(R, Cw));
-    if (cC[2] > -0.15 * f) return null;
+    if (cC[2] > -0.05 * f) return null;
     return [cX[0], cX[1], cX[2], 0, cY[0], cY[1], cY[2], 0, cZ[0], cZ[1], cZ[2], 0, cC[0], cC[1], cC[2] + f, 1];
   }
 
@@ -166,13 +195,16 @@
   var HFOV = 50;                 // カメラの横の視野角(度)の仮定
   var latest = null;             // {yaw, pitch, R}
   var P = { x: 0, y: 0 };        // 推定したいまの位置(m)
-  var steps = 0;
+  var steps = 0, walking = false;
   var pdrOn = true;
   var eyeZ = 0;                  // 目の高さのずれ(m)
   var stepLen = 0.7;             // 歩幅(m)
-  var placeDist = 2.0;           // 置く距離(m)
+  var placeDist = 2.0;           // 置く距離(m、自由モード)
   var items = [], sel = null, uid = 0;
-  var lib = [];                  // {url}
+  var mode = "free";             // 'free' | 'wall' | 'floor'
+  var wall = { camSet: [0, 0], yawG: 0, dist: 3.0, ang: 0 };
+  var floorH = 1.4;              // カメラの床からの高さ(m)
+  var showGrid = true;
 
   // =====================================================================
   // 画像ライブラリ(最初は仮の絵。「画像を追加」で自分のイラストを追加)
@@ -189,7 +221,6 @@
     return c.toDataURL("image/png");
   }
   function addToLib(url) {
-    lib.push({ url: url });
     var b = document.createElement("button");
     b.type = "button"; b.className = "sub";
     b.setAttribute("aria-label", "この画像を置く");
@@ -210,21 +241,62 @@
   });
 
   // =====================================================================
-  // 板を置く・選ぶ・消す
+  // 置く場所の計算(自由 / 壁 / 床)
   // =====================================================================
   function camPos() { return [P.x, P.y, eyeZ]; }
-
-  function gazePos(D) {
+  function gazeDir() {
     var y = rad(latest.yaw), p = rad(latest.pitch);
-    return [P.x + D * Math.sin(y) * Math.cos(p), P.y + D * Math.cos(y) * Math.cos(p), eyeZ + D * Math.sin(p)];
+    return [Math.sin(y) * Math.cos(p), Math.cos(y) * Math.cos(p), Math.sin(p)];
+  }
+  function wallState() {
+    var yw = wall.yawG + wall.ang;
+    return {
+      yaw: yw,
+      n: [-Math.sin(rad(yw)), -Math.cos(rad(yw))],   // 壁の法線(こちら側を向く)
+      p0: [wall.camSet[0] + wall.dist * Math.sin(rad(wall.yawG)), wall.camSet[1] + wall.dist * Math.cos(rad(wall.yawG))]
+    };
+  }
+  function setWallFromGaze() {
+    wall.camSet = [P.x, P.y];
+    wall.yawG = latest ? latest.yaw : 0;
+  }
+
+  // いま向いている先に板を置く位置を求める。失敗したら {err}
+  function computePlacement() {
+    var d = gazeDir(), cp = camPos();
+    if (mode === "free") {
+      var D = placeDist;
+      return { pos: [cp[0] + D * d[0], cp[1] + D * d[1], cp[2] + D * d[2]], axes: axesFor("wall", latest.yaw), kind: "free", w: D * 0.6 };
+    }
+    if (mode === "wall") {
+      var w = wallState(), n = w.n;
+      var den = d[0] * n[0] + d[1] * n[1];
+      if (den > -0.05) return { err: "壁の方を向いてから、タップしてください" };
+      var t = ((w.p0[0] - cp[0]) * n[0] + (w.p0[1] - cp[1]) * n[1]) / den;
+      if (t < 0.3 || t > 40) return { err: "壁が近すぎる、または遠すぎます。壁までの距離を合わせてください" };
+      return {
+        pos: [cp[0] + t * d[0] + n[0] * 0.01, cp[1] + t * d[1] + n[1] * 0.01, cp[2] + t * d[2]],
+        axes: axesFor("wall", w.yaw), kind: "wall", w: Math.max(0.5, Math.min(2.5, t * 0.5))
+      };
+    }
+    // floor
+    var zf = -floorH;
+    if (d[2] > -0.05) return { err: "床の方(下)を向いてから、タップしてください" };
+    var tf = (zf - cp[2]) / d[2];
+    if (tf < 0.3 || tf > 40) return { err: "床が近すぎる、または遠すぎます。カメラの高さを合わせてください" };
+    return {
+      pos: [cp[0] + tf * d[0], cp[1] + tf * d[1], zf + 0.01],
+      axes: axesFor("floor", latest.yaw), kind: "floor", w: Math.max(0.5, Math.min(2.5, tf * 0.5))
+    };
   }
 
   function place(url) {
     if (!latest) { note("センサーの値がまだ取れていません。スマホを少し動かしてからもう一度押してください"); return; }
-    var D = placeDist;
-    var it = { id: ++uid, wM: Math.round(D * 0.6 * 10) / 10, op: 0.95, yaw: latest.yaw, pos: gazePos(D) };
+    var r = computePlacement();
+    if (r.err) { note(r.err); return; }
+    var it = { id: ++uid, wM: Math.round(r.w * 10) / 10, op: 0.95, pos: r.pos, axes: r.axes, kind: r.kind };
     var el = new Image();
-    el.className = "item"; el.draggable = false; el.alt = ""; el.src = url;
+    el.className = "item" + (r.kind === "free" ? "" : " fixed"); el.draggable = false; el.alt = ""; el.src = url;
     el.addEventListener("pointerdown", function (ev) { ev.stopPropagation(); select(it); });
     it.el = el;
     scene.appendChild(el);
@@ -249,7 +321,11 @@
 
   $("replace").addEventListener("click", function () {
     if (!sel || !latest) return;
-    sel.pos = gazePos(placeDist); sel.yaw = latest.yaw; update();
+    var r = computePlacement();
+    if (r.err) { note(r.err); return; }
+    sel.pos = r.pos; sel.axes = r.axes; sel.kind = r.kind;
+    sel.el.classList.toggle("fixed", r.kind !== "free");
+    update();
     note("いま向いている先に置き直しました");
   });
   $("del").addEventListener("click", function () {
@@ -261,6 +337,31 @@
   });
 
   // =====================================================================
+  // 貼る面のモード
+  // =====================================================================
+  function setMode(m) {
+    mode = m;
+    $("modeFree").className = m === "free" ? "on" : "sub";
+    $("modeWall").className = m === "wall" ? "on" : "sub";
+    $("modeFloor").className = m === "floor" ? "on" : "sub";
+    $("planeUI").hidden = m === "free";
+    $("wallUI").hidden = m !== "wall";
+    $("floorUI").hidden = m !== "floor";
+    if (m === "wall") { setWallFromGaze(); note("壁の方を向いて、グリッドが本物の壁に重なるよう「壁までの距離」と「壁の角度」を合わせてください"); }
+    if (m === "floor") note("床の方(下)を向いて、グリッドが床に重なるよう「カメラの高さ」を合わせてください");
+    update();
+  }
+  $("modeFree").addEventListener("click", function () { setMode("free"); });
+  $("modeWall").addEventListener("click", function () { setMode("wall"); });
+  $("modeFloor").addEventListener("click", function () { setMode("floor"); });
+  $("wallSet").addEventListener("click", function () { setWallFromGaze(); update(); note("いまの向きで壁を設定しました"); });
+  $("gridBtn").addEventListener("click", function () {
+    showGrid = !showGrid;
+    var b = $("gridBtn"); b.textContent = "グリッドを表示: " + (showGrid ? "オン" : "オフ"); b.classList.toggle("on", showGrid); b.classList.toggle("sub", !showGrid);
+    update();
+  });
+
+  // =====================================================================
   // スライダー
   // =====================================================================
   function sync() {
@@ -269,6 +370,9 @@
     $("alphaO").textContent = sel ? Math.round(sel.op * 100) + "%" : "-";
     $("eyeO").textContent = (eyeZ >= 0 ? "+" : "") + eyeZ.toFixed(1) + "m";
     $("stepO").textContent = stepLen.toFixed(2) + "m";
+    $("wallDistO").textContent = wall.dist.toFixed(1) + "m";
+    $("wallAngO").textContent = wall.ang + "°";
+    $("floorHO").textContent = floorH.toFixed(1) + "m";
   }
   $("placeDist").addEventListener("input", function (e) { placeDist = e.target.value / 10; sync(); });
   $("size").addEventListener("input", function (e) { if (sel) { sel.wM = e.target.value / 10; sync(); update(); } });
@@ -276,6 +380,9 @@
   $("eye").addEventListener("input", function (e) { eyeZ = e.target.value / 100 * 0.8; sync(); update(); });
   $("eye").addEventListener("dblclick", function (e) { e.target.value = 0; eyeZ = 0; sync(); update(); });
   $("step").addEventListener("input", function (e) { stepLen = e.target.value / 100; sync(); });
+  $("wallDist").addEventListener("input", function (e) { wall.dist = e.target.value / 10; sync(); update(); });
+  $("wallAng").addEventListener("input", function (e) { wall.ang = Number(e.target.value); sync(); update(); });
+  $("floorH").addEventListener("input", function (e) { floorH = e.target.value / 10; sync(); update(); });
   sync();
 
   $("pdr").addEventListener("click", function () {
@@ -293,6 +400,27 @@
   // =====================================================================
   // 描画
   // =====================================================================
+  var gridEl = document.createElement("div");
+  gridEl.id = "gridEl"; gridEl.className = "item"; scene.appendChild(gridEl);
+
+  function updateGrid(R, cp, f) {
+    if (!showGrid || mode === "free" || !R) { gridEl.style.visibility = "hidden"; return; }
+    var pos, axes, wm, hm, cell;
+    if (mode === "wall") {
+      var w = wallState();
+      pos = [w.p0[0] + w.n[0] * 0.02, w.p0[1] + w.n[1] * 0.02, 0]; axes = axesFor("wall", w.yaw); wm = 6; hm = 3; cell = 0.5;
+    } else {
+      pos = [Math.round(P.x), Math.round(P.y), -floorH]; axes = axesFor("floor", 0); wm = 6; hm = 6; cell = 1;
+    }
+    var m = viewMatrix(R, pos, axes, cp, f);
+    if (!m) { gridEl.style.visibility = "hidden"; return; }
+    gridEl.style.width = (wm * f).toFixed(0) + "px";
+    gridEl.style.height = (hm * f).toFixed(0) + "px";
+    gridEl.style.backgroundSize = (cell * f).toFixed(1) + "px " + (cell * f).toFixed(1) + "px";
+    gridEl.style.visibility = "visible";
+    gridEl.style.transform = "matrix3d(" + m.map(function (v) { return v.toFixed(4); }).join(",") + ") translate(-50%, -50%)";
+  }
+
   function update() {
     var W = window.innerWidth;
     var f = (W / 2) / Math.tan(rad(HFOV / 2));
@@ -304,18 +432,19 @@
       el.style.width = (it.wM * f).toFixed(1) + "px";
       el.style.opacity = it.op;
       if (!R) { el.style.visibility = "hidden"; continue; }
-      var m = viewMatrix(R, it.pos, it.yaw, cp, f);
+      var m = viewMatrix(R, it.pos, it.axes, cp, f);
       if (!m) { el.style.visibility = "hidden"; continue; }
       el.style.visibility = "visible";
       el.style.transform = "matrix3d(" + m.map(function (v) { return v.toFixed(4); }).join(",") + ") translate(-50%, -50%)";
     }
+    updateGrid(R, cp, f);
   }
   window.addEventListener("resize", update);
 
   function hudUpdate() {
     if (!latest) return;
     hud.innerHTML = "向き " + latest.yaw.toFixed(0) + "° / 上下 " + latest.pitch.toFixed(0) + "°<br>" +
-      "歩数 " + steps + " / 位置 (" + P.x.toFixed(1) + ", " + P.y.toFixed(1) + ")m";
+      "歩数 " + steps + (walking ? "(歩行中)" : "") + " / 位置 (" + P.x.toFixed(1) + ", " + P.y.toFixed(1) + ")m";
   }
 
   // =====================================================================
@@ -333,25 +462,49 @@
     update(); hudUpdate();
   }
 
-  // 歩数の検出(加速度の大きさの揺れから)
-  var base = 9.8, smooth = 0, armed = true, lastStep = 0;
+  // 歩数の検出。
+  //  ・加速度の揺れのピークを数える
+  //  ・スマホを上下に振る・回す動きは歩数に数えない(回転が速いときは無視)
+  //  ・3回続けて、歩く間隔(0.33〜0.9秒)でピークが出たときだけ「歩いている」と判断する
+  var base = 9.8, smooth = 0, armed = true, lastPeak = 0, busyUntil = 0, cand = [];
+  function commitSteps(n) {
+    if (!pdrOn || !latest) return;
+    var h = rad(walkHeading(latest.R));
+    for (var k = 0; k < n; k++) { P.x += stepLen * Math.sin(h); P.y += stepLen * Math.cos(h); steps++; }
+    update();
+  }
+  function onPeak(now) {
+    if (now < busyUntil) { cand = []; walking = false; return; }
+    if (cand.length) {
+      var dt = now - cand[cand.length - 1];
+      if (dt < 330 || dt > 900) { cand = [now]; walking = false; return; }
+    }
+    cand.push(now);
+    if (!walking) {
+      if (cand.length >= 3) { walking = true; commitSteps(cand.length); }
+    } else {
+      commitSteps(1);
+    }
+  }
   function onMotion(e) {
+    var now = performance.now();
+    var rr = e.rotationRate;
+    if (rr && rr.alpha != null) {
+      var rot = Math.sqrt(rr.alpha * rr.alpha + rr.beta * rr.beta + rr.gamma * rr.gamma);
+      if (rot > 110) { busyUntil = now + 500; cand = []; walking = false; }
+    }
     var a = e.accelerationIncludingGravity;
     if (!a || a.x == null) return;
     var mag = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
     base = base * 0.98 + mag * 0.02;
     smooth = smooth * 0.6 + (mag - base) * 0.4;
-    var now = performance.now();
     if (smooth < 0.3) armed = true;
-    if (armed && smooth > 1.1 && now - lastStep > 330) {
-      armed = false; lastStep = now;
-      if (pdrOn && latest) {
-        var h = rad(walkHeading(latest.R));
-        P.x += stepLen * Math.sin(h); P.y += stepLen * Math.cos(h);
-        steps++;
-        update(); hudUpdate();
-      }
+    if (armed && smooth > 1.1 && now - lastPeak > 330) {
+      armed = false; lastPeak = now;
+      onPeak(now);
     }
+    if (walking && now - lastPeak > 1500) { walking = false; cand = []; }
+    hudUpdate();
   }
 
   async function enableSensors() {
@@ -392,8 +545,13 @@
   });
   if (!window.isSecureContext) $("startNote").textContent = "HTTPSではないページです。カメラは使えません。";
 
-  // テスト用に公開(画面には影響しません)
-  window.__arsketch = { viewMatrix: viewMatrix, rotFromEuler: rotFromEuler, walkHeading: walkHeading };
+  setMode("free");
+  // テスト用(画面には影響しません)
+  window.__arsketch = {
+    viewMatrix: viewMatrix, rotFromEuler: rotFromEuler, walkHeading: walkHeading,
+    items: function () { return items.map(function (i) { return { pos: i.pos, kind: i.kind, wM: i.wM }; }); },
+    state: function () { return { P: P, steps: steps, walking: walking, mode: mode }; }
+  };
 })();
 </script>
 </body>
