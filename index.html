@@ -139,7 +139,7 @@
       <label class="slider">大きさ <input id="size" type="range" min="2" max="60" value="12" disabled><output id="sizeO"></output></label>
       <label class="slider">濃さ <input id="alpha" type="range" min="20" max="100" value="95" disabled><output id="alphaO"></output></label>
       <label class="slider">目の高さ <input id="eye" type="range" min="-100" max="100" value="0"><output id="eyeO"></output></label>
-      <label class="slider">歩幅 <input id="step" type="range" min="40" max="100" value="70"><output id="stepO"></output></label>
+      <label class="slider">歩幅 <input id="step" type="range" min="15" max="100" value="40"><output id="stepO"></output></label>
       <label class="slider">想定距離(映像) <input id="visDepth" type="range" min="5" max="60" value="20"><output id="visDepthO"></output></label>
       <label class="slider">マーカーの一辺 <input id="mkSize" type="range" min="3" max="40" value="15"><output id="mkSizeO"></output></label>
     </div>
@@ -2234,7 +2234,7 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
   var visDepth = 2.0;            // 映像推定で仮定する、見ている面までの距離(m)
   var markerOn = false, markerSizeM = 0.15;
   var eyeZ = 0;                  // 目の高さのずれ(m)
-  var stepLen = 0.7;             // 歩幅(m)
+  var stepLen = 0.4;             // 歩幅(m)
   var placeDist = 2.0;           // 置く距離(m、自由モード)
   var items = [], sel = null, uid = 0;
   var mode = "free";             // 'free' | 'wall' | 'floor'
@@ -2515,7 +2515,6 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
   // =====================================================================
   var VW = 160;
   var vcan = document.createElement("canvas"), vctx = vcan.getContext("2d", { willReadFrequently: true });
-  var vis = { prevPyr: null, prevR: null, prevT: 0, feats: [], n: 0, info: "" };
 
   function toGray(data, n) {
     var g = new Float32Array(n);
@@ -2628,9 +2627,32 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     return [a[0][3] / a[0][0], a[1][3] / a[1][1], a[2][3] / a[2][2]];
   }
 
-  // 前フレームの特徴点を追い、回転分を引いた残りの動きから (a,b,c) = (横, 縦, 前後)の移動 / 距離 を求める
-  function estimateMotion(pyrA, pyrB, feats, f, Rprev, Rcur) {
-    var w = pyrA[0].w, h = pyrA[0].h, cx = w / 2, cy = h / 2, pts = [];
+  // ---- 最小二乗: 各点で  du = (-f*tx + xc*tz)/Z ,  dv = (-f*ty + yc*tz)/Z  を満たす移動 t=(tx,ty,tz)[m] を求める ----
+  function lsFit(pts, f) {
+    var M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], v = [0, 0, 0], i, s, t;
+    for (i = 0; i < pts.length; i++) {
+      var p = pts[i], iz = 1 / p.Z;
+      var r1 = [-f * iz, 0, p.xc * iz], r2 = [0, -f * iz, p.yc * iz];
+      for (s = 0; s < 3; s++) {
+        for (t = 0; t < 3; t++) M[s][t] += r1[s] * r1[t] + r2[s] * r2[t];
+        v[s] += r1[s] * p.du + r2[s] * p.dv;
+      }
+    }
+    var q = solve3(M, v);
+    if (!q) return null;
+    var res = pts.map(function (p) {
+      var iz2 = 1 / p.Z;
+      var eu = p.du - (-f * q[0] + p.xc * q[2]) * iz2, ev = p.dv - (-f * q[1] + p.yc * q[2]) * iz2;
+      return Math.sqrt(eu * eu + ev * ev);
+    });
+    var sorted = res.slice().sort(function (a, b) { return a - b; });
+    return { q: q, res: res, med: sorted[Math.floor(sorted.length / 2)] };
+  }
+
+  // 前フレームの特徴点を追い、回転分を引いた残りの動きから、スマホの移動(前フレームのカメラ座標、m)を求める
+  // depthFn(xc,yc) = その点までの奥行き(m)。分からなければ null
+  function estimateMotion(pyrA, pyrB, feats, f, Rprev, Rcur, depthFn) {
+    var w = pyrA[0].w, h = pyrA[0].h, cx = w / 2, cy = h / 2, raw = [];
     for (var n = 0; n < feats.length; n++) {
       var ft = feats[n], xc = ft.x - cx, yc = ft.y - cy, g0 = [0, 0];
       if (Rprev && Rcur) {
@@ -2640,42 +2662,35 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
       }
       var r = lkTrack(pyrA, pyrB, ft.x, ft.y, g0[0], g0[1]);
       if (!r || r.err > 14) continue;
-      var du = r.dx - g0[0], dv = r.dy - g0[1];
-      if (Math.abs(du) > 10 || Math.abs(dv) > 10) continue;
-      pts.push({ xc: xc, yc: yc, du: du, dv: dv });
+      if (Math.abs(r.dx - g0[0]) > 12 || Math.abs(r.dy - g0[1]) > 12) continue;
+      raw.push({ xc: xc, yc: yc, dx: r.dx, dy: r.dy });
     }
-    if (pts.length < 8) return { ok: false, n: pts.length };
-    var q = null, use = pts;
+    var pts = [];
+    for (var i = 0; i < raw.length; i++) {
+      var q0 = raw[i], Z = depthFn(q0.xc, q0.yc), g = (Rprev && Rcur) ? rotPredict(q0.xc, q0.yc, f, Rprev, Rcur) : [q0.xc, q0.yc];
+      if (!Z || !g) continue;
+      pts.push({ xc: q0.xc, yc: q0.yc, du: q0.dx - (g[0] - q0.xc), dv: q0.dy - (g[1] - q0.yc), Z: Z });
+    }
+    if (pts.length < 8) return { ok: false, n: pts.length, raw: raw };
+    var use = pts, fit = null;
     for (var pass = 0; pass < 3; pass++) {
-      var M = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], v = [0, 0, 0];
-      for (var i = 0; i < use.length; i++) {
-        var p = use[i];
-        // 式1: -f*a + xc*c = du / 式2: -f*b + yc*c = dv
-        var r1 = [-f, 0, p.xc], r2 = [0, -f, p.yc];
-        for (var s = 0; s < 3; s++) {
-          for (var t = 0; t < 3; t++) M[s][t] += r1[s] * r1[t] + r2[s] * r2[t];
-          v[s] += r1[s] * p.du + r2[s] * p.dv;
-        }
-      }
-      q = solve3(M, v);
-      if (!q) return { ok: false, n: pts.length };
-      var res = pts.map(function (p) {
-        var eu = p.du - (-f * q[0] + p.xc * q[2]), ev = p.dv - (-f * q[1] + p.yc * q[2]);
-        return { p: p, e: Math.sqrt(eu * eu + ev * ev) };
-      });
-      var es = res.map(function (x) { return x.e; }).sort(function (a, b) { return a - b; });
-      var med = es[Math.floor(es.length / 2)], lim = Math.max(0.35, 2.5 * med);
-      use = res.filter(function (x) { return x.e <= lim; }).map(function (x) { return x.p; });
-      if (use.length < 8) return { ok: false, n: use.length };
+      fit = lsFit(use, f);
+      if (!fit) return { ok: false, n: pts.length, raw: raw };
+      var lim = Math.max(0.35, 2.5 * fit.med), keep = [];
+      for (var k = 0; k < use.length; k++) if (fit.res[k] <= lim) keep.push(use[k]);
+      if (keep.length < 8) return { ok: false, n: keep.length, raw: raw };
+      use = keep;
     }
+    fit = lsFit(use, f) || fit;
     var mags = use.map(function (p) { return Math.sqrt(p.du * p.du + p.dv * p.dv); }).sort(function (a, b) { return a - b; });
-    return { ok: true, n: use.length, a: q[0], b: q[1], c: q[2], medMag: mags[Math.floor(mags.length / 2)] };
+    return { ok: true, n: use.length, t: fit.q, medMag: mags[Math.floor(mags.length / 2)], raw: raw };
   }
 
-  function estimateFromGray(g1, g2, w, h, f, Rprev, Rcur) {
+  // テスト・検証用:2枚の画像(グレースケール)から推定(奥行きは一定値 Z とする)
+  function estimateFromGray(g1, g2, w, h, f, Rprev, Rcur, Z) {
     var A = buildPyr(g1, w, h), B = buildPyr(g2, w, h);
     var feats = detectFeatures(A[0]);
-    var e = estimateMotion(A, B, feats, f, Rprev, Rcur);
+    var e = estimateMotion(A, B, feats, f, Rprev, Rcur, function () { return Z || 2.0; });
     e.features = feats.length;
     return e;
   }
@@ -2686,17 +2701,108 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     return fScreen / Math.max(W / vw, H / vh);
   }
 
-  // 映像推定で使う「壁までの距離」。壁モードなら壁の面から、そうでなければ設定値
-  function currentDepth() {
-    if (mode === "wall" && latest) {
-      var d = gazeDir(), w = wallState(), cp = camPos();
-      var den = d[0] * w.n[0] + d[1] * w.n[1];
-      if (den < -0.1) {
-        var t = ((w.p0[0] - cp[0]) * w.n[0] + (w.p0[1] - cp[1]) * w.n[1]) / den;
-        if (t > 0.3 && t < 15) return t;
-      }
+  // ---- 姿勢の履歴(カメラ映像は、センサーの値より遅れて届くため、時刻をずらして使う) ----
+  var oriHist = [];
+  function pushOri(t, R) { oriHist.push({ t: t, R: R }); if (oriHist.length > 150) oriHist.shift(); }
+  function Rat(t) {
+    var n = oriHist.length;
+    if (!n) return null;
+    if (t < oriHist[0].t - 40) return null;
+    var best = oriHist[n - 1], bd = Math.abs(best.t - t);
+    for (var i = n - 2; i >= 0; i--) {
+      var d = Math.abs(oriHist[i].t - t);
+      if (d < bd) { bd = d; best = oriHist[i]; } else if (oriHist[i].t < t) break;
     }
-    return visDepth;
+    return best.R;
+  }
+  var LAGS = [0, 30, 60, 90, 120, 150, 180, 210, 240];
+  var vis = { prevPyr: null, prevT: 0, feats: [], n: 0, info: "", lag: 60, lagScore: {}, lagN: 0, depth: 0 };
+
+  // 映像の遅れ(ミリ秒)を、回転しているときの「回転では説明できない動き」が一番小さくなる値から自動で決める
+  function calibLag(raw, f, tPrev, tCur, rate, depthFn) {
+    if (rate < 8 || raw.length < 12) return;
+    LAGS.forEach(function (lag) {
+      var Rp = Rat(tPrev - lag), Rc = Rat(tCur - lag);
+      if (!Rp || !Rc) return;
+      var pts = [];
+      for (var i = 0; i < raw.length; i++) {
+        var q0 = raw[i], Z = depthFn(q0.xc, q0.yc), g = rotPredict(q0.xc, q0.yc, f, Rp, Rc);
+        if (!Z || !g) continue;
+        pts.push({ xc: q0.xc, yc: q0.yc, du: q0.dx - (g[0] - q0.xc), dv: q0.dy - (g[1] - q0.yc), Z: Z });
+      }
+      if (pts.length < 10) return;
+      // 回転の誤差は「横の移動」と似た動きになるため、移動を当てはめずに、残りの動きそのものの大きさを使う
+      var mags = pts.map(function (p) { return Math.sqrt(p.du * p.du + p.dv * p.dv); }).sort(function (a, b) { return a - b; });
+      var med = mags[Math.floor(mags.length / 2)];
+      var old = vis.lagScore[lag];
+      vis.lagScore[lag] = old == null ? med : old * 0.85 + med * 0.15;
+    });
+    vis.lagN++;
+    if (vis.lagN >= 4) {
+      var bestLag = vis.lag, bestScore = Infinity;
+      LAGS.forEach(function (lag) { var sc = vis.lagScore[lag]; if (sc != null && sc < bestScore) { bestScore = sc; bestLag = lag; } });
+      // 谷の底を、前後の値から補間して細かく決める
+      var sp = vis.lagScore[bestLag - 30], sn = vis.lagScore[bestLag + 30], sb = vis.lagScore[bestLag];
+      if (sp != null && sn != null) {
+        var den = sp - 2 * sb + sn;
+        if (den > 1e-6) bestLag += Math.max(-15, Math.min(15, 0.5 * (sp - sn) / den * 30));
+      }
+      vis.lag = Math.round(bestLag);
+    }
+  }
+
+  // 見ている面までの奥行き(m)を返す関数。壁・床モードでは、面の式から点ごとに計算する
+  function makeDepthFn(Rp, f) {
+    var cp = camPos();
+    if (mode === "wall") {
+      var ws = wallState();
+      return function (xc, yc) {
+        var dw = mulR(Rp, [xc / f, -yc / f, -1]);
+        var den = dw[0] * ws.n[0] + dw[1] * ws.n[1];
+        if (den > -1e-3) return null;
+        var s = ((ws.p0[0] - cp[0]) * ws.n[0] + (ws.p0[1] - cp[1]) * ws.n[1]) / den;
+        return (s > 0.3 && s < 30) ? s : null;
+      };
+    }
+    if (mode === "floor") {
+      var zf = -floorH;
+      return function (xc, yc) {
+        var dw = mulR(Rp, [xc / f, -yc / f, -1]);
+        if (dw[2] > -1e-3) return null;
+        var s = (zf - cp[2]) / dw[2];
+        return (s > 0.3 && s < 30) ? s : null;
+      };
+    }
+    var d0 = visDepth;
+    return function () { return d0; };
+  }
+
+  // 1フレーム分の処理(pyr: 縮小画像, now: 時刻ms, f: この画像での焦点距離px)
+  function visProcess(pyr, now, f) {
+    if (vis.prevPyr && vis.feats.length >= 8) {
+      var dt = (now - vis.prevT) / 1000;
+      var Rp = Rat(vis.prevT - vis.lag), Rc = Rat(now - vis.lag);
+      if (Rp && Rc && dt < 0.3) {
+        var rate = rotAngleDeg(Rp, Rc) / Math.max(dt, 0.001);
+        if (rate < 100) {
+          var depthFn = makeDepthFn(Rp, f);
+          var est = estimateMotion(vis.prevPyr, pyr, vis.feats, f, Rp, Rc, depthFn);
+          vis.n = est.n || 0;
+          if (est.raw) calibLag(est.raw, f, vis.prevT, now, rate, depthFn);
+          if (est.ok && est.medMag > 0.12) {
+            var t = est.t, len = Math.sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+            if (len > 0.002 && len < 0.25) {
+              var wv = mulR(Rp, [t[0], -t[1], -t[2]]);
+              P.x += wv[0]; P.y += wv[1];
+              zAuto = Math.max(-1.5, Math.min(1.5, zAuto + wv[2]));
+            }
+          }
+          vis.info = "追跡" + vis.n + "点 / 遅れ" + vis.lag + "ms";
+        } else { vis.n = 0; vis.info = "回転が速いため休止"; }
+      } else { vis.info = "姿勢データ待ち"; }
+    } else { vis.info = "追跡" + vis.feats.length + "点"; }
+    if (vis.feats.length < 8 && posMode === "vision") vis.info += "(模様が少なく追跡しにくい)";
+    vis.prevPyr = pyr; vis.prevT = now; vis.feats = detectFeatures(pyr[0]);
   }
 
   function visStep(now) {
@@ -2706,28 +2812,7 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     vctx.drawImage(cam, 0, 0, w, h);
     var img = vctx.getImageData(0, 0, w, h);
     var pyr = buildPyr(toGray(img.data, w * h), w, h);
-    var R = latest.R;
-    if (vis.prevPyr && vis.prevR && vis.feats.length >= 8) {
-      var dt = (now - vis.prevT) / 1000;
-      var rate = rotAngleDeg(vis.prevR, R) / Math.max(dt, 0.001);
-      if (dt < 0.3 && rate < 70) {
-        var f = focalVideo() * w / vw, depth = currentDepth();
-        var est = estimateMotion(vis.prevPyr, pyr, vis.feats, f, vis.prevR, R);
-        vis.n = est.n || 0;
-        if (est.ok && est.medMag > 0.12) {
-          var t = [est.a * depth, est.b * depth, est.c * depth];
-          var len = Math.sqrt(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
-          if (len > 0.002 && len < 0.2) {
-            var wv = mulR(vis.prevR, [t[0], -t[1], -t[2]]);
-            P.x += wv[0]; P.y += wv[1];
-            zAuto = Math.max(-1.5, Math.min(1.5, zAuto + wv[2]));
-          }
-        }
-        vis.info = "追跡 " + vis.n + "点";
-      } else { vis.n = 0; vis.info = "回転が速いため休止"; }
-    } else { vis.info = "追跡 " + vis.feats.length + "点"; }
-    if (vis.feats.length < 8 && posMode === "vision") vis.info += "(模様が少なく追跡しにくい)";
-    vis.prevPyr = pyr; vis.prevR = R; vis.prevT = now; vis.feats = detectFeatures(pyr[0]);
+    visProcess(pyr, now, focalVideo() * w / vw);
     update();
   }
 
@@ -2815,6 +2900,8 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
       pitch: Math.asin(Math.max(-1, Math.min(1, dz))) * 180 / Math.PI,
       R: R
     };
+    var ts = e.timeStamp; if (!(ts > 0) || ts > 1e11) ts = performance.now();
+    pushOri(ts, R);
     update(); hudUpdate();
   }
 
@@ -2908,7 +2995,7 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     viewMatrix: viewMatrix, rotFromEuler: rotFromEuler, walkHeading: walkHeading,
     items: function () { return items.map(function (i) { return { pos: i.pos, kind: i.kind, wM: i.wM }; }); },
     state: function () { return { P: P, steps: steps, walking: walking, mode: mode, zAuto: zAuto, markers: markers }; },
-    vis: { estimateFromGray: estimateFromGray },
+    vis: { estimateFromGray: estimateFromGray, visProcess: visProcess, pushOri: pushOri, buildPyr: buildPyr, state: function () { return vis; } },
     markerObs: markerObservation,
     setP: function (x, y) { P.x = x; P.y = y; }
   };
