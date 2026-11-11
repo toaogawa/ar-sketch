@@ -128,6 +128,29 @@
       <button id="mkShow" class="sub" type="button">マーカーを表示</button>
     </div>
     <div class="row">
+      <button id="stBtn" class="sub" type="button">ストーリー: オフ</button>
+      <span class="lbl">画像を順に並べて、歩くと出てきます</span>
+    </div>
+    <div id="storyUI" hidden>
+      <div class="row">
+        <button id="stSet" type="button">ここをスタートにする</button>
+        <button id="stSide" class="sub" type="button">コマの位置: 右の壁</button>
+        <button id="stManual" class="sub" type="button">進み方: 歩く</button>
+      </div>
+      <div class="row" id="stProgRow" hidden>
+        <label class="slider">進み具合 <input id="stProg" type="range" min="0" max="400" value="0"><output id="stProgO"></output></label>
+      </div>
+      <div class="row">
+        <label class="slider">コマの間隔 <input id="stGap" type="range" min="5" max="40" value="15"><output id="stGapO"></output></label>
+        <label class="slider">壁までの横の距離 <input id="stLat" type="range" min="3" max="30" value="10"><output id="stLatO"></output></label>
+        <label class="slider">コマの高さ(中心) <input id="stH" type="range" min="3" max="25" value="11"><output id="stHO"></output></label>
+        <label class="slider">コマの幅 <input id="stW" type="range" min="2" max="20" value="6"><output id="stWO"></output></label>
+        <label class="slider">出てくる距離 <input id="stAhead" type="range" min="10" max="100" value="40"><output id="stAheadO"></output></label>
+        <label class="slider">カメラの高さ(床から) <input id="stFloor" type="range" min="8" max="20" value="14"><output id="stFloorO"></output></label>
+      </div>
+      <span class="lbl">スタート地点で、進む向きにスマホを向けて「ここをスタートにする」を押します。「画像を追加」で入れた画像が、名前の順に並びます。</span>
+    </div>
+    <div class="row">
       <button id="replace" class="sub" type="button" disabled>選択中を置き直す</button>
       <button id="del" class="sub" type="button" disabled>選択中を削除</button>
       <button id="clear" class="sub" type="button">全部消す</button>
@@ -2241,6 +2264,10 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
   var wall = { camSet: [0, 0], yawG: 0, dist: 3.0, ang: 0 };
   var floorH = 1.4;              // カメラの床からの高さ(m)
   var showGrid = true;
+  var libList = [];              // 画像ライブラリ [{url, user}]
+  // ストーリー: start=スタート地点(m)、psi=進む向き(度、北から時計回り)、side=1(右の壁)/-1(左の壁)
+  var story = { on: false, started: false, start: [0, 0], psi: 0, side: 1, gap: 1.5, lat: 1.0, h: 1.1, w: 0.6,
+                ahead: 4.0, manual: false, prog: 0, els: [], shown: 0 };
 
   // =====================================================================
   // 画像ライブラリ(最初は仮の絵。「画像を追加」で自分のイラストを追加)
@@ -2256,7 +2283,8 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     g.font = "bold 30px sans-serif"; g.fillText("仮の絵", 300, 340);
     return c.toDataURL("image/png");
   }
-  function addToLib(url) {
+  function addToLib(url, user) {
+    libList.push({ url: url, user: !!user });
     var b = document.createElement("button");
     b.type = "button"; b.className = "sub";
     b.setAttribute("aria-label", "この画像を置く");
@@ -2271,7 +2299,8 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     var fs = Array.prototype.slice.call(e.target.files || []);
     if (!fs.length) return;
     fs.sort(function (a, b) { return a.name.localeCompare(b.name, "ja", { numeric: true }); });
-    fs.forEach(function (f) { addToLib(URL.createObjectURL(f)); });
+    fs.forEach(function (f) { addToLib(URL.createObjectURL(f), true); });
+    if (story.on) storyRebuild();
     e.target.value = "";
     note("画像を" + fs.length + "枚追加しました。下の一覧からタップして置いてください");
   });
@@ -2411,6 +2440,13 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     $("floorHO").textContent = floorH.toFixed(1) + "m";
     $("visDepthO").textContent = visDepth.toFixed(1) + "m";
     $("mkSizeO").textContent = Math.round(markerSizeM * 100) + "cm";
+    $("stGapO").textContent = story.gap.toFixed(1) + "m";
+    $("stLatO").textContent = story.lat.toFixed(1) + "m";
+    $("stHO").textContent = story.h.toFixed(1) + "m";
+    $("stWO").textContent = story.w.toFixed(1) + "m";
+    $("stAheadO").textContent = story.ahead.toFixed(1) + "m";
+    $("stFloorO").textContent = floorH.toFixed(1) + "m";
+    $("stProgO").textContent = story.prog.toFixed(1) + "m";
   }
   $("placeDist").addEventListener("input", function (e) { placeDist = e.target.value / 10; sync(); });
   $("size").addEventListener("input", function (e) { if (sel) { sel.wM = e.target.value / 10; sync(); update(); } });
@@ -2422,7 +2458,7 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
   $("wallAng").addEventListener("input", function (e) { wall.ang = Number(e.target.value); sync(); update(); });
   $("visDepth").addEventListener("input", function (e) { visDepth = e.target.value / 10; sync(); });
   $("mkSize").addEventListener("input", function (e) { markerSizeM = e.target.value / 100; sync(); });
-  $("floorH").addEventListener("input", function (e) { floorH = e.target.value / 10; sync(); update(); });
+  $("floorH").addEventListener("input", function (e) { floorH = e.target.value / 10; $("stFloor").value = e.target.value; sync(); update(); });
   sync();
 
   function setPosMode(m) {
@@ -2447,12 +2483,137 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
   $("mkNext").addEventListener("click", function () { mkId = (mkId + 1) % 250; showMarker(); });
   $("mkPrev").addEventListener("click", function () { mkId = (mkId + 249) % 250; showMarker(); });
   $("zero").addEventListener("click", function () {
-    P.x = 0; P.y = 0; zAuto = 0; steps = 0; markers = {}; update(); hudUpdate(); note("位置を0に戻しました(登録したマーカーも消えます。スタート地点にいるときに押してください)");
+    P.x = 0; P.y = 0; zAuto = 0; steps = 0; markers = {}; story.start = [0, 0]; update(); hudUpdate(); note("位置を0に戻しました(登録したマーカーも消えます。スタート地点にいるときに押してください)");
   });
   $("toggleUI").addEventListener("click", function () {
     var ui = $("ui"); ui.hidden = !ui.hidden;
     $("toggleUI").textContent = ui.hidden ? "操作を出す" : "操作を隠す";
   });
+
+  // =====================================================================
+  // ストーリー(画像を順に並べて、歩いた距離で出す)
+  //   スタート地点から進む向きに「進み」(m)を測り、i番目のコマは i×間隔 の地点に置く。
+  //   進みが「コマの地点 − 出てくる距離」を超えると、1mかけてすっと出てくる。戻ると、また消える。
+  //   コマは進行方向の横の壁(右または左)に、通路の側を向いて貼る。
+  // =====================================================================
+  function stoUrls() {
+    var u = libList.filter(function (x) { return x.user; });
+    if (!u.length) u = libList;
+    return u.map(function (x) { return x.url; });
+  }
+  function storyRebuild() {
+    story.els.forEach(function (e) { if (e.parentNode) e.parentNode.removeChild(e); });
+    story.els = [];
+    if (!story.on) return;
+    stoUrls().forEach(function (url) {
+      var el = new Image();
+      el.className = "item fixed"; el.draggable = false; el.alt = ""; el.src = url;
+      el.style.pointerEvents = "none";
+      scene.appendChild(el);
+      story.els.push(el);
+    });
+    update();
+  }
+  function storyDir() { var p = rad(story.psi); return [Math.sin(p), Math.cos(p)]; }
+  function storyProgress() {
+    if (story.manual) return story.prog;
+    var d = storyDir();
+    return (P.x - story.start[0]) * d[0] + (P.y - story.start[1]) * d[1];
+  }
+  function storySetStart() {
+    if (!latest) { note("センサーの値がまだ取れていません。スマホを少し動かしてからもう一度押してください"); return false; }
+    story.start = [P.x, P.y];
+    story.psi = walkHeading(latest.R);
+    story.started = true;
+    return true;
+  }
+  function updateStory(R, cp, f) {
+    if (!story.on) return;
+    var n = story.els.length, prog = storyProgress(), d = storyDir();
+    var right = [d[1], -d[0]];                       // 進む向きの右
+    var axes = axesFor("wall", story.psi + 90 * story.side);
+    var zc = -floorH + story.h, shown = 0;
+    for (var i = 0; i < n; i++) {
+      var el = story.els[i];
+      var s = i * story.gap, rel = s - prog;
+      var fade = Math.max(0, Math.min(1, (story.ahead - rel) / 1.0));
+      el.style.width = (story.w * f).toFixed(1) + "px";
+      if (!R || fade <= 0) { el.style.visibility = "hidden"; continue; }
+      var pos = [story.start[0] + d[0] * s + right[0] * story.lat * story.side,
+                 story.start[1] + d[1] * s + right[1] * story.lat * story.side, zc];
+      var m = viewMatrix(R, pos, axes, cp, f, 0);
+      if (!m) { el.style.visibility = "hidden"; continue; }
+      el.style.opacity = (0.95 * fade).toFixed(3);
+      el.style.visibility = "visible";
+      el.style.transform = "matrix3d(" + m.map(function (v) { return v.toFixed(4); }).join(",") + ") translate(-50%, -50%)";
+      shown++;
+    }
+    story.shown = shown;
+  }
+
+  var ST_KEY = "arsketch_story_v1";
+  function stSave() {
+    try { localStorage.setItem(ST_KEY, JSON.stringify({ gap: story.gap, lat: story.lat, h: story.h, w: story.w, ahead: story.ahead, side: story.side })); } catch (e) {}
+  }
+  function stLoad() {
+    try {
+      var o = JSON.parse(localStorage.getItem(ST_KEY) || "null");
+      if (o) {
+        [["gap", 0.5, 4], ["lat", 0.3, 3], ["h", 0.3, 2.5], ["w", 0.2, 2], ["ahead", 1, 10]].forEach(function (k) {
+          var v = o[k[0]]; if (typeof v === "number" && isFinite(v)) story[k[0]] = Math.max(k[1], Math.min(k[2], v));
+        });
+        if (o.side === 1 || o.side === -1) story.side = o.side;
+      }
+    } catch (e) {}
+    $("stGap").value = Math.round(story.gap * 10); $("stLat").value = Math.round(story.lat * 10);
+    $("stH").value = Math.round(story.h * 10); $("stW").value = Math.round(story.w * 10);
+    $("stAhead").value = Math.round(story.ahead * 10);
+    $("stSide").textContent = "コマの位置: " + (story.side === 1 ? "右の壁" : "左の壁");
+  }
+  stLoad();
+  sync();
+
+  $("stBtn").addEventListener("click", function () {
+    if (!story.on) {
+      if (!story.started && !storySetStart()) return;
+      story.on = true;
+      $("stBtn").textContent = "ストーリー: オン"; $("stBtn").className = "on";
+      $("storyUI").hidden = false;
+      storyRebuild();
+      note("いまの場所をスタートにしました。進む向きに歩くと、コマが順に出てきます");
+    } else {
+      story.on = false;
+      $("stBtn").textContent = "ストーリー: オフ"; $("stBtn").className = "sub";
+      $("storyUI").hidden = true;
+      storyRebuild();
+    }
+  });
+  $("stSet").addEventListener("click", function () {
+    if (storySetStart()) { update(); note("ここをスタート(0m)にしました。進む向きは、いまスマホを向けている向きです"); }
+  });
+  $("stSide").addEventListener("click", function () {
+    story.side = -story.side;
+    $("stSide").textContent = "コマの位置: " + (story.side === 1 ? "右の壁" : "左の壁");
+    stSave(); update();
+  });
+  $("stManual").addEventListener("click", function () {
+    if (!story.manual) {
+      story.prog = Math.max(0, Math.min(40, storyProgress()));
+      $("stProg").value = Math.round(story.prog * 10);
+    }
+    story.manual = !story.manual;
+    $("stManual").textContent = "進み方: " + (story.manual ? "スライダー" : "歩く");
+    $("stManual").className = story.manual ? "on" : "sub";
+    $("stProgRow").hidden = !story.manual;
+    sync(); update();
+  });
+  $("stProg").addEventListener("input", function (e) { story.prog = e.target.value / 10; sync(); update(); });
+  $("stGap").addEventListener("input", function (e) { story.gap = e.target.value / 10; sync(); stSave(); update(); });
+  $("stLat").addEventListener("input", function (e) { story.lat = e.target.value / 10; sync(); stSave(); update(); });
+  $("stH").addEventListener("input", function (e) { story.h = e.target.value / 10; sync(); stSave(); update(); });
+  $("stW").addEventListener("input", function (e) { story.w = e.target.value / 10; sync(); stSave(); update(); });
+  $("stAhead").addEventListener("input", function (e) { story.ahead = e.target.value / 10; sync(); stSave(); update(); });
+  $("stFloor").addEventListener("input", function (e) { floorH = e.target.value / 10; $("floorH").value = e.target.value; sync(); update(); });
 
   // =====================================================================
   // 描画
@@ -2495,6 +2656,7 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
       el.style.transform = "matrix3d(" + m.map(function (v) { return v.toFixed(4); }).join(",") + ") translate(-50%, -50%)";
     }
     updateGrid(R, cp, f);
+    updateStory(R, cp, f);
   }
   window.addEventListener("resize", update);
 
@@ -2503,6 +2665,7 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     var extra = "";
     if (posMode === "vision") extra += "<br>映像: " + vis.info;
     if (markerOn) extra += "<br>" + (mkInfo || "マーカー: 探しています");
+    if (story.on) extra += "<br>ストーリー: 進み " + storyProgress().toFixed(1) + "m / 表示 " + story.shown + "/" + story.els.length + "枚";
     hud.innerHTML = "向き " + latest.yaw.toFixed(0) + "° / 上下 " + latest.pitch.toFixed(0) + "°<br>" +
       (posMode === "steps" ? "歩数 " + steps + (walking ? "(歩行中)" : "") + " / " : "") +
       "位置 (" + P.x.toFixed(1) + ", " + P.y.toFixed(1) + ", " + (eyeZ + zAuto).toFixed(1) + ")m" + extra;
@@ -2997,6 +3160,7 @@ POS.Pose = function(error1, rotation1, translation1, error2, rotation2, translat
     state: function () { return { P: P, steps: steps, walking: walking, mode: mode, zAuto: zAuto, markers: markers }; },
     vis: { estimateFromGray: estimateFromGray, visProcess: visProcess, pushOri: pushOri, buildPyr: buildPyr, state: function () { return vis; } },
     markerObs: markerObservation,
+    story: { state: function () { return story; }, progress: storyProgress, setStart: storySetStart, rebuild: storyRebuild },
     setP: function (x, y) { P.x = x; P.y = y; }
   };
 })();
