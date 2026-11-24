@@ -4,12 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AR スケッチ</title>
-<!-- ?v=xr で WebXR 版へ、?v=sensor でカメラ+センサー版へ、すぐ移動 -->
+<!-- 更新のたびに下の ver を上げる。
+     ?v=xr で WebXR 版へ、?v=sensor でカメラ+センサー版へ、すぐ移動 -->
 <style>
   html, body { margin: 0; background: #10151b; color: #f2f5f8;
     font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif; }
   main { max-width: 480px; margin: 0 auto; padding: 32px 18px; display: flex; flex-direction: column; gap: 14px; }
   h1 { font-size: 1.25rem; margin: 0 0 6px; }
+  .ver { margin: 0; color: #7d8a97; font-size: 0.8rem; }
   a.btn { display: flex; flex-direction: column; gap: 4px; padding: 18px 16px; border-radius: 8px; text-decoration: none;
     background: rgba(255,255,255,0.12); color: #f2f5f8; border: 1px solid rgba(255,255,255,0.25);
     font-weight: 700; font-size: 1.05rem; }
@@ -24,6 +26,7 @@
 <body>
 <main>
   <h1>AR スケッチ</h1>
+  <p class="ver">ver1.0</p>
   <a id="btnXr" class="btn" href="android/">
     <span class="tag" hidden>おすすめ</span>
     WebXR 版

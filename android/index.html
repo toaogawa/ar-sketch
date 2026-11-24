@@ -158,11 +158,10 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 //   初期値は参考にした Quest 向け AR コミックの配置値:
 //   右の壁側に約1m、高さ0.7〜1.2m(中心0.95m)、小コマ約0.44×0.61m、経路0〜17m
 // =====================================================================
-const DEF = { mode: "tap", zoom: 1.0, zoomRef: 2.0, gap: 1.5, first: 1.0, lat: 1.0, h: 0.95, w: 0.44, ahead: 3.0, face: 0, side: 1,
+const DEF = { mode: "tap", gap: 1.5, first: 1.0, lat: 1.0, h: 0.95, w: 0.44, ahead: 3.0, face: 0, side: 1,
   testDist: 2.0, markGap: 1.0, markLat: 0, markLen: 18, eye: 1.4, marks: true, anchor: "each" };
 const SL = {
-  koma:  [["h", "コマの高さ(中心・床から)", 0.3, 2.5, 0.05, "m"], ["w", "コマの幅", 0.2, 2, 0.02, "m"],
-          ["zoom", "近づいたときの拡大の強さ(0=現実どおり)", 0, 3, 0.1, "x"], ["zoomRef", "元の大きさになる距離", 0.5, 5, 0.1, "m"]],
+  koma:  [["h", "コマの高さ(中心・床から)", 0.3, 2.5, 0.05, "m"], ["w", "コマの幅", 0.2, 2, 0.02, "m"]],
   test:  [["testDist", "スタートからの距離", 0.5, 10, 0.1, "m"]],
   story: [["gap", "コマの間隔", 0.5, 4, 0.1, "m"], ["first", "最初のコマまで", 0, 5, 0.1, "m"],
           ["lat", "歩く線から壁側への距離", 0, 3, 0.05, "m"], ["ahead", "出てくる距離(手前)", 1, 10, 0.5, "m"],
@@ -202,7 +201,7 @@ document.querySelectorAll("[data-sl]").forEach((box) => {
     box.appendChild(lab);
   });
 });
-function fmt(k) { return UNIT[k] === "°" ? Math.round(cfg[k]) + "°" : UNIT[k] === "x" ? cfg[k].toFixed(1) : cfg[k].toFixed(2) + "m"; }
+function fmt(k) { return UNIT[k] === "°" ? Math.round(cfg[k]) + "°" : cfg[k].toFixed(2) + "m"; }
 function syncUI() {
   document.querySelectorAll("[data-k]").forEach((el) => { el.value = cfg[el.dataset.k]; });
   document.querySelectorAll("[data-o]").forEach((el) => { el.textContent = fmt(el.dataset.o); });
@@ -218,7 +217,7 @@ document.addEventListener("input", (e) => {
 });
 document.addEventListener("change", (e) => {
   const k = e.target.dataset && e.target.dataset.k;
-  if (k && !["ahead", "zoom", "zoomRef"].includes(k) && session && origin) needRebuild = true;
+  if (k && k !== "ahead" && session && origin) needRebuild = true;
 });
 $("anchorSel").addEventListener("change", (e) => { cfg.anchor = e.target.value; save(); syncUI(); });
 function toggleMarks() { cfg.marks = !cfg.marks; save(); syncUI(); }
@@ -679,13 +678,7 @@ function onFrame(t, frame) {
       o.obj.matrixWorldNeedsUpdate = true;
       if (o.kind === "mark") { o.obj.visible = cfg.marks; continue; }
       panels++;
-      const dist = camPos.distanceTo(new THREE.Vector3().setFromMatrixPosition(m));
-      nearest = Math.min(nearest, dist);
-      // 近づくほど、現実より大きく見せる(元の大きさ × (基準の距離 / いまの距離)^強さ)
-      if (cfg.zoom > 0) {
-        const z = clamp(Math.pow(cfg.zoomRef / Math.max(dist, 0.2), cfg.zoom), 0.3, 4);
-        o.obj.matrix.scale(new THREE.Vector3(z, z, z));
-      }
+      nearest = Math.min(nearest, camPos.distanceTo(new THREE.Vector3().setFromMatrixPosition(m)));
       const fade = o.fade ? clamp((cfg.ahead - (o.s - prog)) / 1.0, 0, 1) : 1;
       o.obj.visible = fade > 0;
       if (fade > 0) { shown++; o.obj.children.forEach((c) => { c.material.opacity = fade; }); }
