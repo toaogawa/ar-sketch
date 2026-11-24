@@ -7,7 +7,7 @@
 <!--
   AR コミック WebXR 版(Android Chrome + ARCore 用)
   - 位置合わせは ARCore に任せる(WebXR immersive-ar)。床は hit-test、ずれ対策は anchors。
-  - モード: 「1枚テスト」のみ(スタートから指定距離の正面に1枚)。ストーリー(並べて出す)は一旦外した
+  - モード: スタートと向きを決めたあと、床をタップした場所にコマを1枚ずつ置く(全部消すボタンあり)。ストーリーは一旦外した
   - 計測: 床に目印(初期1m間隔)を出し、実物のテープ印に照準を合わせてタップすると、仮想の目印とのずれ(cm)を記録。CSVで保存できる。
   - 画像: 「画像を追加」で選んだもの(ファイル名順)> comics/list.json に書いたファイル > 仮の絵 の順で使う。
       comics/list.json の例: ["001.png", "002.png", "003.png"](android/comics/ に画像と一緒に置く)
@@ -95,10 +95,6 @@
 
   <h2>コマ</h2>
   <div class="sliders" data-sl="koma"></div>
-  <div id="grpTest">
-    <h2>1枚テスト</h2>
-    <div class="sliders" data-sl="test"></div>
-  </div>
 
   <h2>位置合わせと計測</h2>
   <div class="row">
@@ -137,6 +133,7 @@
     <div id="xrUI">
       <div class="row">
         <button id="xDir" type="button" hidden>スマホの向きで決める</button>
+        <button id="xClear" type="button">コマを全部消す</button>
         <button id="xRestart" class="sub" type="button">スタートを置き直す</button>
         <button id="xMeasure" class="sub" type="button">計測: オフ</button>
         <button id="xUndo" class="sub" type="button">最後の計測を消す</button>
@@ -145,7 +142,6 @@
       <details>
         <summary>配置の調整(指を離すと置き直します)</summary>
         <div class="sliders" data-sl="koma"></div>
-        <div class="sliders" data-sl="test" data-only="test"></div>
       </details>
     </div>
   </div>
@@ -162,7 +158,7 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 //   初期値は参考にした Quest 向け AR コミックの配置値:
 //   右の壁側に約1m、高さ0.7〜1.2m(中心0.95m)、小コマ約0.44×0.61m、経路0〜17m
 // =====================================================================
-const DEF = { mode: "test", gap: 1.5, first: 1.0, lat: 1.0, h: 0.95, w: 0.44, ahead: 3.0, face: 0, side: 1,
+const DEF = { mode: "tap", gap: 1.5, first: 1.0, lat: 1.0, h: 0.95, w: 0.44, ahead: 3.0, face: 0, side: 1,
   testDist: 2.0, markGap: 1.0, markLat: 0, markLen: 18, eye: 1.4, marks: true, anchor: "each" };
 const SL = {
   koma:  [["h", "コマの高さ(中心・床から)", 0.3, 2.5, 0.05, "m"], ["w", "コマの幅", 0.2, 2, 0.02, "m"]],
@@ -209,12 +205,7 @@ function fmt(k) { return UNIT[k] === "°" ? Math.round(cfg[k]) + "°" : cfg[k].t
 function syncUI() {
   document.querySelectorAll("[data-k]").forEach((el) => { el.value = cfg[el.dataset.k]; });
   document.querySelectorAll("[data-o]").forEach((el) => { el.textContent = fmt(el.dataset.o); });
-  $("grpTest").hidden = cfg.mode !== "test";
-  document.querySelectorAll("[data-only]").forEach((el) => { el.hidden = el.dataset.only !== cfg.mode; });
-  $("modeNote").textContent = cfg.mode === "test"
-    ? "スタートから " + cfg.testDist.toFixed(1) + "m 先の正面に、1枚目の画像を1枚だけ置きます。ずれの確認用です。"
-    : "画像をファイル名順に、歩く経路の" + (cfg.side === 1 ? "右" : "左") + "側へ " + cfg.gap.toFixed(1) +
-      "m おきに並べます。近づくと出てきます。";
+  $("modeNote").textContent = "スタートと進む向きを決めたあと、床をタップした場所にコマを1枚ずつ置けます。画像は追加した順に使います。";
   $("marksBtn").textContent = $("xMarks").textContent = "床の目印: " + (cfg.marks ? "オン" : "オフ");
   $("anchorSel").value = cfg.anchor;
   $("logNote").textContent = "記録 " + log.length + " 件";
@@ -344,6 +335,8 @@ let origin = null;                // { mat: 置いたときの姿勢, cur: い�
 let originGen = 0, needOriginAnchor = false, needRebuild = false, objGen = 0;
 let startPt = null;
 let objs = [];                    // [{ kind: 'panel'|'mark', s, fade, local, obj, anchor }]
+let placed = [];                  // タップで置いたコマ [{ p: 原点座標の床の点, n: 原点座標の向き, page: 画像の番号 }]
+let pendingAdd = [];              // 次のフレームで追加するコマ
 let lastHit = null;               // THREE.Vector3(照準が当たっている床の点)
 const viewerMat = new THREE.Matrix4(), camPos = new THREE.Vector3();
 let tracking = false, lostCount = 0, measureOn = false, sessNo = 0, lastProg = 0, msgBase = "";
@@ -444,7 +437,7 @@ function setState(s) {
 }
 $("xRestart").addEventListener("click", () => {
   if (!session) return;
-  clearObjs();
+  clearObjs(); placed = []; pendingAdd = [];
   if (origin && origin.anchor) try { origin.anchor.delete(); } catch (e) {}
   origin = null;
   setState("needStart");
@@ -466,8 +459,30 @@ function onSelect() {
     setOrigin(startPt, f.normalize());
   } else if (state === "run" && measureOn) {
     measure();
+  } else if (state === "run") {
+    placePanel();
   }
 }
+// 照準の床の点に、こちらを向いたコマを1枚置く(原点の座標で覚えておく)
+function placePanel() {
+  if (!lastHit) { msg("照準が床に当たっていません。コマを置きたい場所の床に照準を合わせてタップしてください。"); return; }
+  if (!pages.length) { msg("画像がありません。"); return; }
+  const inv = origin.cur.clone().invert();
+  const p = lastHit.clone().applyMatrix4(inv); p.y = 0;
+  const toCam = camPos.clone().sub(lastHit); toCam.y = 0;
+  if (toCam.length() < 0.05) toCam.copy(oFwd).negate();
+  const n = toCam.normalize().transformDirection(inv); n.y = 0; n.normalize();
+  const item = { p, n, page: placed.length % pages.length };
+  placed.push(item);
+  pendingAdd.push(item);
+  msg("コマを置きました(" + placed.length + "枚)。続けて床をタップすると増やせます。");
+}
+$("xClear").addEventListener("click", () => {
+  objs.filter((o) => o.kind === "panel").forEach((o) => disposeObj(o));
+  objs = objs.filter((o) => o.kind !== "panel");
+  placed = []; pendingAdd = [];
+  if (session) msg("コマを全部消しました。床をタップすると、また置けます。");
+});
 function setDirFromPhone() {
   const e = viewerMat.elements;
   const f = new THREE.Vector3(-e[8], 0, -e[10]);          // カメラの前(-Z)を水平にしたもの
@@ -486,9 +501,7 @@ function setOrigin(p, f) {
   state = "run";
   $("xDir").hidden = true;
   const anc = !anchorsOK ? "(この端末はアンカー非対応)" : cfg.anchor === "none" ? "(アンカーなし)" : "";
-  msg((cfg.mode === "test"
-    ? cfg.testDist.toFixed(1) + "m 先にコマを1枚置きました。"
-    : "コマを" + pages.length + "枚並べました。歩いて進んでください。") + anc);
+  msg("床に照準を合わせてタップすると、そこにコマを置きます。" + anc);
 }
 
 // ---------------------------------------------------------------------
@@ -501,17 +514,11 @@ function poseMat(pos, n) {
 }
 function layout() {
   const out = [];
-  if (cfg.mode === "test") {
-    out.push({ kind: "panel", page: pages[0], s: cfg.testDist, fade: false,
-      local: poseMat(new THREE.Vector3(0, cfg.h, -cfg.testDist), new THREE.Vector3(0, 0, 1)) });
-  } else {
-    const a = cfg.face * Math.PI / 180;
-    const n = new THREE.Vector3(-cfg.side * Math.cos(a), 0, Math.sin(a));   // 通路側〜手前向き
-    pages.forEach((p, i) => {
-      const s = cfg.first + i * cfg.gap;
-      out.push({ kind: "panel", page: p, s, fade: true,
-        local: poseMat(new THREE.Vector3(cfg.lat * cfg.side, cfg.h, -s), n) });
-    });
+  for (const it of placed) {
+    const pg = pages[it.page % pages.length];
+    if (!pg) continue;
+    out.push({ kind: "panel", page: pg, s: 0, fade: false,
+      local: poseMat(it.p.clone().setY(cfg.h), it.n) });
   }
   const nMarks = Math.floor(cfg.markLen / cfg.markGap + 1e-6) + 1;
   for (let k = 0; k < nMarks; k++) {
@@ -551,16 +558,18 @@ function makeMark(s) {
   g.add(lab);
   return g;
 }
+function disposeObj(o) {
+  o.dead = true;
+  if (o.anchor) try { o.anchor.delete(); } catch (e) {}
+  scene.remove(o.obj);
+  o.obj.traverse((c) => {
+    if (c.geometry) c.geometry.dispose();
+    if (c.material) { if (c.material.map && c.material.map.userData.own) c.material.map.dispose(); c.material.dispose(); }
+  });
+}
 function clearObjs() {
   objGen++;
-  objs.forEach((o) => {
-    if (o.anchor) try { o.anchor.delete(); } catch (e) {}
-    scene.remove(o.obj);
-    o.obj.traverse((c) => {
-      if (c.geometry) c.geometry.dispose();
-      if (c.material) { if (c.material.map && c.material.map.userData.own) c.material.map.dispose(); c.material.dispose(); }
-    });
-  });
+  objs.forEach(disposeObj);
   objs = [];
 }
 function createAnchor(frame, m) {
@@ -568,22 +577,25 @@ function createAnchor(frame, m) {
   m.decompose(p, q, s);
   return frame.createAnchor(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w }), refSpace);
 }
+function addObj(frame, O, L) {
+  const g = objGen;
+  const obj = L.kind === "panel" ? makePanel(L.page) : makeMark(L.s);
+  obj.matrixAutoUpdate = false;
+  scene.add(obj);
+  const o = { kind: L.kind, s: L.s, fade: L.fade, local: L.local, obj, anchor: null };
+  objs.push(o);
+  if (cfg.anchor === "each" && anchorsOK) {
+    const w = new THREE.Matrix4().multiplyMatrices(O, L.local);
+    try {
+      createAnchor(frame, w).then((a) => { if (g !== objGen || o.dead) a.delete(); else o.anchor = a; }).catch(() => {});
+    } catch (e) {}
+  }
+}
 function rebuild(frame) {
   clearObjs();
-  const g = objGen, O = originWorld(frame);
-  for (const L of layout()) {
-    const obj = L.kind === "panel" ? makePanel(L.page) : makeMark(L.s);
-    obj.matrixAutoUpdate = false;
-    scene.add(obj);
-    const o = { kind: L.kind, s: L.s, fade: L.fade, local: L.local, obj, anchor: null };
-    objs.push(o);
-    if (cfg.anchor === "each" && anchorsOK) {
-      const w = new THREE.Matrix4().multiplyMatrices(O, L.local);
-      try {
-        createAnchor(frame, w).then((a) => { if (g !== objGen) a.delete(); else o.anchor = a; }).catch(() => {});
-      } catch (e) {}
-    }
-  }
+  pendingAdd = [];
+  const O = originWorld(frame);
+  for (const L of layout()) addObj(frame, O, L);
 }
 function originWorld(frame) {
   if (origin.anchor) {
@@ -628,7 +640,7 @@ function onFrame(t, frame) {
   }
   reticle.matrixAutoUpdate = false;
   reticle.matrixWorldNeedsUpdate = true;
-  reticle.visible = !!lastHit && (state === "needStart" || state === "needDir" || measureOn);
+  reticle.visible = !!lastHit && state !== "idle";
   if (state === "needStart" && hitSource && !lastHit) $("msg").textContent = "床を探しています。スマホをゆっくり左右に動かして床を映してください。";
   else $("msg").textContent = msgBase;
 
@@ -640,8 +652,17 @@ function onFrame(t, frame) {
     } catch (e) {}
   }
   if (origin && needRebuild) { needRebuild = false; rebuild(frame); }
+  if (origin && pendingAdd.length) {
+    const O = originWorld(frame);
+    for (const it of pendingAdd) {
+      const pg = pages[it.page % pages.length];
+      if (pg) addObj(frame, O, { kind: "panel", page: pg, s: 0, fade: false, local: poseMat(it.p.clone().setY(cfg.h), it.n) });
+    }
+    pendingAdd = [];
+  }
 
   let shown = 0, panels = 0, anchored = 0;
+  nearest = Infinity;
   if (origin) {
     const O = originWorld(frame);
     originAxes();
@@ -657,6 +678,7 @@ function onFrame(t, frame) {
       o.obj.matrixWorldNeedsUpdate = true;
       if (o.kind === "mark") { o.obj.visible = cfg.marks; continue; }
       panels++;
+      nearest = Math.min(nearest, camPos.distanceTo(new THREE.Vector3().setFromMatrixPosition(m)));
       const fade = o.fade ? clamp((cfg.ahead - (o.s - prog)) / 1.0, 0, 1) : 1;
       o.obj.visible = fade > 0;
       if (fade > 0) { shown++; o.obj.children.forEach((c) => { c.material.opacity = fade; }); }
@@ -666,7 +688,7 @@ function onFrame(t, frame) {
   renderer.render(scene, camera);
 }
 
-let hudT = 0;
+let hudT = 0, nearest = Infinity;
 function hud(shown, panels, anchored) {
   const now = performance.now();
   if (now - hudT < 200) return;
@@ -674,7 +696,7 @@ function hud(shown, panels, anchored) {
   const lines = [tracking ? "追跡 OK" : '<span class="bad">追跡を見失い中</span>'];
   if (origin) {
     lines.push("進み " + lastProg.toFixed(2) + "m");
-    lines.push("表示 " + shown + "/" + panels + "枚");
+    lines.push("コマ " + panels + "枚" + (isFinite(nearest) ? "(近いコマまで " + nearest.toFixed(2) + "m)" : ""));
     const anc = !anchorsOK ? "非対応" : cfg.anchor === "none" ? "なし"
       : cfg.anchor === "origin" ? (origin.anchor ? "原点のみ" : "原点 作成中")
       : anchored + "/" + objs.length;
