@@ -1,0 +1,763 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AR コミック(Android)</title>
+<!--
+  AR コミック WebXR 版(Android Chrome + ARCore 用)
+  - 位置合わせは ARCore に任せる(WebXR immersive-ar)。床は hit-test、ずれ対策は anchors。
+  - モード: 「1枚テスト」= スタートから指定距離(初期2m)の正面に1枚 / 「ストーリー」= 連番画像を歩く経路の横に並べ、近づくとフェードイン
+  - 計測: 床に目印(初期1m間隔)を出し、実物のテープ印に照準を合わせてタップすると、仮想の目印とのずれ(cm)を記録。CSVで保存できる。
+  - 画像: 「画像を追加」で選んだもの(ファイル名順)> comics/list.json に書いたファイル > 仮の絵 の順で使う。
+      comics/list.json の例: ["001.png", "002.png", "003.png"](android/comics/ に画像と一緒に置く)
+  - WebXR が使えない端末(iPhone など)では、../index.html(カメラ+センサー方式)へ案内する。
+-->
+<style>
+  :root { --ui: rgba(20, 24, 30, 0.82); --fg: #f2f5f8; --sub: #b9c4cf; --accent: #6fb1ff; --line: rgba(255,255,255,0.25);
+    --warn: #ffcf6f; --bad: #ff8a80; --bg: #10151b; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Hiragino Kaku Gothic ProN", "Yu Gothic", "Noto Sans JP", system-ui, sans-serif; }
+  [hidden] { display: none !important; }
+  #gl { display: none; }   /* AR の映像は WebXR が描く。canvas 自体は見せない */
+
+  button, label.btn, select { font: inherit; font-weight: 700; color: #0b1118; background: var(--accent); border: 0;
+    border-radius: 6px; padding: 10px 14px; min-height: 44px; cursor: pointer; display: inline-flex;
+    align-items: center; justify-content: center; text-align: center; }
+  button.sub, label.btn.sub, select { background: rgba(255,255,255,0.12); color: var(--fg); border: 1px solid var(--line); }
+  button.on { background: var(--accent); color: #0b1118; border-color: var(--accent); }
+  button:disabled { opacity: 0.4; cursor: default; }
+  button:focus-visible, label.btn:focus-within, select:focus-visible { outline: 3px solid #fff; outline-offset: 2px; }
+  select option { color: #111; }
+  input[type=file] { position: absolute; width: 1px; height: 1px; opacity: 0; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .lbl { font-size: 0.82rem; color: var(--sub); line-height: 1.6; }
+  .slider { display: flex; align-items: center; gap: 8px; font-size: 0.82rem; color: #cfd8e1; flex: 1 1 260px; min-width: 0; }
+  .slider span { flex: 0 0 11em; }
+  .slider input { flex: 1; min-width: 0; }
+  .slider output { min-width: 3.6em; text-align: right; font-variant-numeric: tabular-nums; }
+  .sliders { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+
+  /* はじめの画面 */
+  #start { max-width: 680px; margin: 0 auto; padding: 20px 16px 40px; display: flex; flex-direction: column; gap: 14px; }
+  #start h1 { font-size: 1.3rem; margin: 4px 0 0; }
+  #start h2 { font-size: 0.95rem; margin: 10px 0 0; padding-top: 10px; border-top: 1px solid var(--line); }
+  #start p { margin: 0; line-height: 1.7; color: var(--sub); font-size: 0.9rem; }
+  #support { padding: 10px 12px; border-radius: 6px; background: rgba(255,255,255,0.06); font-size: 0.88rem; line-height: 1.6; }
+  #support.ok { border-left: 4px solid #7ddc8a; }
+  #support.ng { border-left: 4px solid var(--bad); }
+  #fallback a { color: var(--accent); font-weight: 700; }
+  #thumbs { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+  #thumbs img { height: 64px; width: auto; border: 1px solid var(--line); background: #fff; flex: 0 0 auto; }
+  #startBtn { font-size: 1.05rem; min-height: 52px; }
+
+  /* AR 中の画面(dom-overlay) */
+  #overlay { position: fixed; inset: 0; pointer-events: none; background: transparent; }
+  #overlay > * { pointer-events: auto; }
+  #msg { position: absolute; left: 12px; right: 12px; top: calc(12px + env(safe-area-inset-top, 0px));
+    background: var(--ui); padding: 8px 12px; border-radius: 6px; font-size: 0.88rem; line-height: 1.55; }
+  #hud { position: absolute; right: 12px; top: calc(84px + env(safe-area-inset-top, 0px)); font-size: 0.74rem;
+    color: #cfd8e1; background: var(--ui); padding: 4px 8px; border-radius: 4px; text-align: right; line-height: 1.5;
+    font-variant-numeric: tabular-nums; }
+  #hud .bad { color: var(--bad); font-weight: 700; }
+  #result { position: absolute; left: 12px; top: calc(84px + env(safe-area-inset-top, 0px)); max-width: 55%;
+    background: var(--ui); padding: 6px 10px; border-radius: 4px; font-size: 0.8rem; line-height: 1.5;
+    font-variant-numeric: tabular-nums; }
+  #xrBar { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; gap: 8px;
+    background: var(--ui); max-height: 50vh; overflow-y: auto;
+    padding: 10px max(12px, env(safe-area-inset-right, 0px)) calc(10px + env(safe-area-inset-bottom, 0px)) max(12px, env(safe-area-inset-left, 0px)); }
+  #xrBar details summary { cursor: pointer; padding: 6px 0; font-size: 0.85rem; color: #cfd8e1; }
+</style>
+</head>
+<body>
+
+<div id="start">
+  <h1>AR コミック(Android / WebXR)</h1>
+  <p>スマホをかざすと、廊下に漫画のコマが現れます。位置合わせは端末の ARCore が行います。
+     カメラ映像は端末の外には送られません。</p>
+  <div id="support">対応状況を確認しています…</div>
+  <div id="fallback" class="lbl" hidden>
+    この端末・ブラウザでは WebXR の AR が使えません。<a href="../index.html">今の方式(カメラ+センサー)で開く</a>
+  </div>
+
+  <h2>モード</h2>
+  <div class="row">
+    <button id="mTest" class="sub" type="button">1枚テスト</button>
+    <button id="mStory" class="sub" type="button">ストーリー</button>
+  </div>
+  <p id="modeNote" class="lbl"></p>
+
+  <h2>画像</h2>
+  <div class="row">
+    <label class="btn sub">画像を追加(ファイル名順)
+      <input id="files" type="file" accept="image/*" multiple>
+    </label>
+    <button id="resetImgs" class="sub" type="button">仮の絵に戻す</button>
+    <span id="imgNote" class="lbl"></span>
+  </div>
+  <div id="thumbs"></div>
+
+  <h2>コマ</h2>
+  <div class="sliders" data-sl="koma"></div>
+  <div id="grpTest">
+    <h2>1枚テスト</h2>
+    <div class="sliders" data-sl="test"></div>
+  </div>
+  <div id="grpStory">
+    <h2>ストーリー</h2>
+    <div class="sliders" data-sl="story"></div>
+    <div class="row" style="margin-top:8px">
+      <button id="sideBtn" class="sub" type="button">コマの位置: 右の壁</button>
+    </div>
+  </div>
+
+  <h2>位置合わせと計測</h2>
+  <div class="row">
+    <label class="lbl" for="anchorSel">アンカー:</label>
+    <select id="anchorSel">
+      <option value="each">コマ・目印ごと(おすすめ)</option>
+      <option value="origin">スタート地点だけ</option>
+      <option value="none">使わない</option>
+    </select>
+    <button id="marksBtn" class="sub" type="button">床の目印: オン</button>
+  </div>
+  <div class="sliders" data-sl="meas"></div>
+  <p class="lbl">計測のしかた: 廊下の床に、スタートから目印の間隔ごとにテープを貼っておきます。AR中に「計測」をオンにし、
+     実物のテープに照準を合わせてタップすると、いちばん近い仮想の目印とのずれを記録します。</p>
+  <div class="row">
+    <button id="csvBtn" class="sub" type="button">計測ログをCSVで保存</button>
+    <button id="logClear" class="sub" type="button">計測ログを消す</button>
+    <span id="logNote" class="lbl"></span>
+  </div>
+
+  <h2>はじめる</h2>
+  <p>スタート地点の床に照準を合わせてタップ → 進む向きの床の印をタップ(または「スマホの向きで決める」)の順で置きます。</p>
+  <button id="startBtn" type="button" disabled>AR をはじめる</button>
+  <p id="startNote" class="lbl"></p>
+</div>
+
+<div id="overlay" hidden>
+  <div id="msg"></div>
+  <div id="hud"></div>
+  <div id="result" hidden></div>
+  <div id="xrBar">
+    <div class="row">
+      <button id="xHide" class="sub" type="button">操作を隠す</button>
+      <button id="xEnd" type="button">終了</button>
+    </div>
+    <div id="xrUI">
+      <div class="row">
+        <button id="xDir" type="button" hidden>スマホの向きで決める</button>
+        <button id="xRestart" class="sub" type="button">スタートを置き直す</button>
+        <button id="xMeasure" class="sub" type="button">計測: オフ</button>
+        <button id="xUndo" class="sub" type="button">最後の計測を消す</button>
+        <button id="xMarks" class="sub" type="button">床の目印: オン</button>
+      </div>
+      <details>
+        <summary>配置の調整(指を離すと置き直します)</summary>
+        <div class="sliders" data-sl="koma"></div>
+        <div class="sliders" data-sl="test" data-only="test"></div>
+        <div class="sliders" data-sl="story" data-only="story"></div>
+      </details>
+    </div>
+  </div>
+</div>
+
+<script type="module">
+import * as THREE from "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js";
+
+const $ = (id) => document.getElementById(id);
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// =====================================================================
+// 設定(localStorage に保存。iPhone 版とは別のキー)
+//   初期値は参考にした Quest 向け AR コミックの配置値:
+//   右の壁側に約1m、高さ0.7〜1.2m(中心0.95m)、小コマ約0.44×0.61m、経路0〜17m
+// =====================================================================
+const DEF = { mode: "test", gap: 1.5, first: 1.0, lat: 1.0, h: 0.95, w: 0.44, ahead: 3.0, face: 0, side: 1,
+  testDist: 2.0, markGap: 1.0, markLat: 0, markLen: 18, eye: 1.4, marks: true, anchor: "each" };
+const SL = {
+  koma:  [["h", "コマの高さ(中心・床から)", 0.3, 2.5, 0.05, "m"], ["w", "コマの幅", 0.2, 2, 0.02, "m"]],
+  test:  [["testDist", "スタートからの距離", 0.5, 10, 0.1, "m"]],
+  story: [["gap", "コマの間隔", 0.5, 4, 0.1, "m"], ["first", "最初のコマまで", 0, 5, 0.1, "m"],
+          ["lat", "歩く線から壁側への距離", 0, 3, 0.05, "m"], ["ahead", "出てくる距離(手前)", 1, 10, 0.5, "m"],
+          ["face", "向き(0°=通路側 / 90°=手前向き)", 0, 90, 5, "°"]],
+  meas:  [["markGap", "目印の間隔", 0.5, 5, 0.5, "m"], ["markLat", "目印の横の位置(右が+)", -3, 3, 0.05, "m"],
+          ["markLen", "目印を置く長さ", 2, 40, 1, "m"], ["eye", "目の高さ(床が取れないとき)", 0.8, 2, 0.05, "m"]],
+};
+const UNIT = {}, RANGE = {};
+Object.values(SL).forEach((g) => g.forEach(([k, , mn, mx, , u]) => { UNIT[k] = u; RANGE[k] = [mn, mx]; }));
+
+const KEY = "arsketch_xr_v1", LOG_KEY = "arsketch_xr_log_v1", SESS_KEY = "arsketch_xr_sess";
+const cfg = Object.assign({}, DEF);
+try {
+  const o = JSON.parse(localStorage.getItem(KEY) || "null");
+  if (o) {
+    for (const k in RANGE) if (typeof o[k] === "number" && isFinite(o[k])) cfg[k] = clamp(o[k], RANGE[k][0], RANGE[k][1]);
+    if (o.side === 1 || o.side === -1) cfg.side = o.side;
+    if (o.mode === "test" || o.mode === "story") cfg.mode = o.mode;
+    if (typeof o.marks === "boolean") cfg.marks = o.marks;
+    if (["each", "origin", "none"].includes(o.anchor)) cfg.anchor = o.anchor;
+  }
+} catch (e) {}
+function save() { try { localStorage.setItem(KEY, JSON.stringify(cfg)); } catch (e) {} }
+
+let log = [];
+try { log = JSON.parse(localStorage.getItem(LOG_KEY) || "[]"); if (!Array.isArray(log)) log = []; } catch (e) { log = []; }
+function saveLog() { try { localStorage.setItem(LOG_KEY, JSON.stringify(log)); } catch (e) {} }
+
+// =====================================================================
+// 画面(スライダーは表から作る。はじめの画面と AR 中の画面で同じ値を共有)
+// =====================================================================
+document.querySelectorAll("[data-sl]").forEach((box) => {
+  SL[box.dataset.sl].forEach(([k, label, mn, mx, st]) => {
+    const lab = document.createElement("label");
+    lab.className = "slider";
+    lab.innerHTML = '<span>' + label + '</span><input type="range" min="' + mn + '" max="' + mx + '" step="' + st +
+      '" data-k="' + k + '"><output data-o="' + k + '"></output>';
+    box.appendChild(lab);
+  });
+});
+function fmt(k) { return UNIT[k] === "°" ? Math.round(cfg[k]) + "°" : cfg[k].toFixed(2) + "m"; }
+function syncUI() {
+  document.querySelectorAll("[data-k]").forEach((el) => { el.value = cfg[el.dataset.k]; });
+  document.querySelectorAll("[data-o]").forEach((el) => { el.textContent = fmt(el.dataset.o); });
+  $("mTest").className = cfg.mode === "test" ? "on" : "sub";
+  $("mStory").className = cfg.mode === "story" ? "on" : "sub";
+  $("grpTest").hidden = cfg.mode !== "test";
+  $("grpStory").hidden = cfg.mode !== "story";
+  document.querySelectorAll("[data-only]").forEach((el) => { el.hidden = el.dataset.only !== cfg.mode; });
+  $("modeNote").textContent = cfg.mode === "test"
+    ? "スタートから " + cfg.testDist.toFixed(1) + "m 先の正面に、1枚目の画像を1枚だけ置きます。ずれの確認用です。"
+    : "画像をファイル名順に、歩く経路の" + (cfg.side === 1 ? "右" : "左") + "側へ " + cfg.gap.toFixed(1) +
+      "m おきに並べます。近づくと出てきます。";
+  $("sideBtn").textContent = "コマの位置: " + (cfg.side === 1 ? "右の壁" : "左の壁");
+  $("marksBtn").textContent = $("xMarks").textContent = "床の目印: " + (cfg.marks ? "オン" : "オフ");
+  $("anchorSel").value = cfg.anchor;
+  $("logNote").textContent = "記録 " + log.length + " 件";
+}
+document.addEventListener("input", (e) => {
+  const k = e.target.dataset && e.target.dataset.k;
+  if (!k) return;
+  cfg[k] = +e.target.value; save(); syncUI();
+});
+document.addEventListener("change", (e) => {
+  const k = e.target.dataset && e.target.dataset.k;
+  if (k && k !== "ahead" && session && origin) needRebuild = true;
+});
+$("mTest").addEventListener("click", () => { cfg.mode = "test"; save(); syncUI(); });
+$("mStory").addEventListener("click", () => { cfg.mode = "story"; save(); syncUI(); });
+$("sideBtn").addEventListener("click", () => { cfg.side = -cfg.side; save(); syncUI(); });
+$("anchorSel").addEventListener("change", (e) => { cfg.anchor = e.target.value; save(); syncUI(); });
+function toggleMarks() { cfg.marks = !cfg.marks; save(); syncUI(); }
+$("marksBtn").addEventListener("click", toggleMarks);
+$("xMarks").addEventListener("click", toggleMarks);
+
+// =====================================================================
+// 画像(ユーザーの画像 > comics/list.json > 仮の絵)
+// =====================================================================
+let pages = [];            // [{ url, name, img, aspect(高さ/幅), tex }]
+let pageSrc = "仮の絵";
+
+function placeholderURL(n) {
+  const c = document.createElement("canvas");
+  c.width = 600; c.height = 849;               // A判の縦長(1:√2)
+  const g = c.getContext("2d");
+  g.fillStyle = "#fff"; g.fillRect(0, 0, 600, 849);
+  g.lineWidth = 12; g.strokeStyle = "#111"; g.strokeRect(6, 6, 588, 837);
+  g.lineWidth = 4; g.strokeRect(40, 40, 520, 330); g.strokeRect(40, 400, 250, 409); g.strokeRect(310, 400, 250, 409);
+  g.fillStyle = "#111"; g.textAlign = "center";
+  g.font = "bold 220px sans-serif"; g.fillText(String(n), 300, 290);
+  g.font = "bold 40px sans-serif"; g.fillText("仮の絵", 165, 620); g.fillText("A判 縦", 435, 620);
+  return c.toDataURL("image/png");
+}
+function loadImg(url) {
+  return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = url; });
+}
+async function setPages(list, src) {
+  const out = [];
+  for (const p of list) {
+    try { const img = await loadImg(p.url); out.push({ url: p.url, name: p.name, img, aspect: img.naturalHeight / img.naturalWidth, tex: null }); }
+    catch (e) {}
+  }
+  if (!out.length) return false;
+  pages.forEach((p) => { if (p.tex) p.tex.dispose(); });
+  pages = out; pageSrc = src;
+  $("thumbs").innerHTML = "";
+  pages.forEach((p) => { const im = new Image(); im.src = p.url; im.alt = p.name; $("thumbs").appendChild(im); });
+  $("imgNote").textContent = pageSrc + " " + pages.length + "枚";
+  return true;
+}
+async function usePlaceholders() {
+  const list = [];
+  for (let i = 1; i <= 12; i++) list.push({ url: placeholderURL(i), name: "仮" + i });
+  await setPages(list, "仮の絵");
+}
+async function tryComicsFolder() {
+  try {
+    const r = await fetch("comics/list.json", { cache: "no-cache" });
+    if (!r.ok) return false;
+    const names = await r.json();
+    if (!Array.isArray(names) || !names.length) return false;
+    names.sort((a, b) => String(a).localeCompare(String(b), "ja", { numeric: true }));
+    return await setPages(names.map((n) => ({ url: "comics/" + encodeURIComponent(n), name: String(n) })), "comics/ の画像");
+  } catch (e) { return false; }
+}
+$("files").addEventListener("change", async (e) => {
+  const fs = Array.from(e.target.files || []);
+  e.target.value = "";
+  if (!fs.length) return;
+  fs.sort((a, b) => a.name.localeCompare(b.name, "ja", { numeric: true }));
+  const ok = await setPages(fs.map((f) => ({ url: URL.createObjectURL(f), name: f.name })), "追加した画像");
+  if (!ok) $("imgNote").textContent = "画像を読み込めませんでした";
+});
+$("resetImgs").addEventListener("click", async () => { if (!(await tryComicsFolder())) await usePlaceholders(); });
+
+// =====================================================================
+// 計測ログ(CSV)
+// =====================================================================
+const COLS = ["session", "time", "mode", "anchor", "mark_m", "real_fwd_m", "real_lat_m",
+  "err_fwd_cm", "err_lat_cm", "err_up_cm", "err_cm", "cam_prog_m", "lost_count"];
+$("csvBtn").addEventListener("click", () => {
+  if (!log.length) { $("logNote").textContent = "記録がありません"; return; }
+  const lines = [COLS.join(",")].concat(log.map((r) => COLS.map((c) => r[c]).join(",")));
+  const blob = new Blob(["﻿" + lines.join("\r\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  const d = new Date(), z = (n) => String(n).padStart(2, "0");
+  a.href = URL.createObjectURL(blob);
+  a.download = "arsketch_xr_log_" + d.getFullYear() + z(d.getMonth() + 1) + z(d.getDate()) + "-" + z(d.getHours()) + z(d.getMinutes()) + ".csv";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+$("logClear").addEventListener("click", () => {
+  if (!log.length) return;
+  if (!confirm("計測ログ " + log.length + " 件を消します。元に戻せません。よろしいですか?")) return;
+  log = []; saveLog(); syncUI();
+});
+
+// =====================================================================
+// WebXR の対応確認(使えなければ今の方式へ案内)
+// =====================================================================
+async function checkSupport() {
+  const box = $("support");
+  let ok = false, why = "";
+  if (!window.isSecureContext) why = "https で開いていないため、WebXR が使えません。";
+  else if (!navigator.xr) why = /iPhone|iPad|iPod/.test(navigator.userAgent)
+    ? "iPhone / iPad の Safari は WebXR に対応していません。" : "このブラウザは WebXR に対応していません(Android の Chrome を使ってください)。";
+  else {
+    try { ok = await navigator.xr.isSessionSupported("immersive-ar"); } catch (e) { ok = false; }
+    if (!ok) why = "この端末では WebXR の AR が使えません(ARCore / Google Play 開発者サービス for AR が必要です)。";
+  }
+  box.className = ok ? "ok" : "ng";
+  box.textContent = ok ? "WebXR の AR が使えます。" : why;
+  $("fallback").hidden = ok;
+  $("startBtn").disabled = !ok;
+}
+
+// =====================================================================
+// three.js と AR セッション
+// =====================================================================
+let renderer, scene, camera, reticle, startMark;
+let session = null, refSpace = null, viewerSpace = null, hitSource = null, anchorsOK = false;
+let state = "idle";               // 'needStart' → 'needDir' → 'run'
+let origin = null;                // { mat: 置いたときの姿勢, cur: いまの姿勢, anchor, gen }
+let originGen = 0, needOriginAnchor = false, needRebuild = false, objGen = 0;
+let startPt = null;
+let objs = [];                    // [{ kind: 'panel'|'mark', s, fade, local, obj, anchor }]
+let lastHit = null;               // THREE.Vector3(照準が当たっている床の点)
+const viewerMat = new THREE.Matrix4(), camPos = new THREE.Vector3();
+let tracking = false, lostCount = 0, measureOn = false, sessNo = 0, lastProg = 0, msgBase = "";
+
+function initThree() {
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  renderer.domElement.id = "gl";
+  document.body.appendChild(renderer.domElement);
+  scene = new THREE.Scene();
+  camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+
+  const rg = new THREE.RingGeometry(0.06, 0.08, 40).rotateX(-Math.PI / 2);
+  reticle = new THREE.Mesh(rg, new THREE.MeshBasicMaterial({ color: 0x6fb1ff }));
+  const dot = new THREE.Mesh(new THREE.CircleGeometry(0.008, 16).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffffff }));
+  reticle.add(dot);
+  reticle.visible = false;
+  scene.add(reticle);
+
+  startMark = new THREE.Mesh(new THREE.RingGeometry(0.1, 0.13, 40).rotateX(-Math.PI / 2),
+    new THREE.MeshBasicMaterial({ color: 0xffcf6f }));
+  startMark.visible = false;
+  scene.add(startMark);
+}
+
+$("startBtn").addEventListener("click", startAR);
+async function startAR() {
+  if (!renderer) initThree();
+  $("overlay").hidden = false;
+  try {
+    session = await navigator.xr.requestSession("immersive-ar", {
+      requiredFeatures: ["local"],
+      optionalFeatures: ["hit-test", "anchors", "dom-overlay"],
+      domOverlay: { root: $("overlay") },
+    });
+  } catch (e) {
+    $("overlay").hidden = true;
+    $("startNote").textContent = "AR を開始できませんでした: " + (e && e.message ? e.message : e);
+    return;
+  }
+  $("start").hidden = true;
+  renderer.xr.setReferenceSpaceType("local");
+  await renderer.xr.setSession(session);
+  refSpace = renderer.xr.getReferenceSpace();
+
+  const feats = session.enabledFeatures;
+  anchorsOK = typeof XRFrame !== "undefined" && "createAnchor" in XRFrame.prototype &&
+    (!feats || feats.includes("anchors"));
+  try {
+    viewerSpace = await session.requestReferenceSpace("viewer");
+    hitSource = await session.requestHitTestSource({ space: viewerSpace });
+  } catch (e) { hitSource = null; }
+
+  try { sessNo = (+localStorage.getItem(SESS_KEY) || 0) + 1; localStorage.setItem(SESS_KEY, String(sessNo)); } catch (e) { sessNo = 1; }
+  lostCount = 0; tracking = false; measureOn = false; lastHit = null;
+  setMeasure(false);
+  $("result").hidden = true;
+  session.addEventListener("select", onSelect);
+  session.addEventListener("end", onEnd);
+  setState("needStart");
+  renderer.setAnimationLoop(onFrame);
+}
+
+function onEnd() {
+  renderer.setAnimationLoop(null);
+  clearObjs();
+  if (origin && origin.anchor) try { origin.anchor.delete(); } catch (e) {}
+  if (hitSource) try { hitSource.cancel(); } catch (e) {}
+  origin = null; hitSource = null; session = null; state = "idle";
+  reticle.visible = false; startMark.visible = false;
+  $("overlay").hidden = true;
+  $("start").hidden = false;
+  $("startNote").textContent = "AR を終了しました。";
+  syncUI();
+}
+$("xEnd").addEventListener("click", () => { if (session) session.end(); });
+$("xHide").addEventListener("click", () => {
+  const h = !$("xrUI").hidden;
+  $("xrUI").hidden = h;
+  $("xHide").textContent = h ? "操作を出す" : "操作を隠す";
+});
+// 操作パネルのタップで「select」(=床のタップ)が起きないようにする
+$("overlay").addEventListener("beforexrselect", (e) => { if (e.target.closest("#xrBar")) e.preventDefault(); });
+
+function msg(t) { msgBase = t; $("msg").textContent = t; }
+function setState(s) {
+  state = s;
+  $("xDir").hidden = s !== "needDir";
+  if (s === "needStart") {
+    startMark.visible = false;
+    msg(hitSource ? "スタート地点の床(テープの印など)に、まるい照準を合わせて画面をタップしてください。"
+                  : "床の検出が使えません。スタート地点に立ち、進む向きにスマホを向けて画面をタップしてください。");
+  } else if (s === "needDir") {
+    msg("進む向きを決めます。廊下の先の床の印(例: 2m先のテープ)に照準を合わせてタップ。または「スマホの向きで決める」。");
+  }
+}
+$("xRestart").addEventListener("click", () => {
+  if (!session) return;
+  clearObjs();
+  if (origin && origin.anchor) try { origin.anchor.delete(); } catch (e) {}
+  origin = null;
+  setState("needStart");
+});
+$("xDir").addEventListener("click", () => { if (state === "needDir") setDirFromPhone(); });
+
+function onSelect() {
+  if (state === "needStart") {
+    if (lastHit) startPt = lastHit.clone();
+    else if (!hitSource) startPt = new THREE.Vector3(camPos.x, camPos.y - cfg.eye, camPos.z);
+    else { msg("まだ床が見つかっていません。スマホをゆっくり動かして床を映し、照準が出てからタップしてください。"); return; }
+    startMark.position.copy(startPt); startMark.visible = true;
+    if (!hitSource) { setDirFromPhone(); return; }
+    setState("needDir");
+  } else if (state === "needDir") {
+    if (!lastHit) { msg("照準が床に当たっていません。印に照準を合わせるか、「スマホの向きで決める」を押してください。"); return; }
+    const f = lastHit.clone().sub(startPt); f.y = 0;
+    if (f.length() < 0.5) { msg("スタート地点から50cm以上離れた印を選んでください。"); return; }
+    setOrigin(startPt, f.normalize());
+  } else if (state === "run" && measureOn) {
+    measure();
+  }
+}
+function setDirFromPhone() {
+  const e = viewerMat.elements;
+  const f = new THREE.Vector3(-e[8], 0, -e[10]);          // カメラの前(-Z)を水平にしたもの
+  if (f.length() < 0.2) { msg("スマホが真下を向いています。少し起こして、進む向きに向けてから押してください。"); return; }
+  setOrigin(startPt, f.normalize());
+}
+function setOrigin(p, f) {
+  const up = new THREE.Vector3(0, 1, 0);
+  const r = new THREE.Vector3().crossVectors(f, up).normalize();
+  // 原点の座標: x=右、y=上、-z=進む向き(three.js のカメラと同じ並び)
+  const m = new THREE.Matrix4().makeBasis(r, up, f.clone().negate()).setPosition(p);
+  origin = { mat: m, cur: m.clone(), anchor: null, gen: ++originGen };
+  startMark.visible = false;
+  needOriginAnchor = cfg.anchor !== "none" && anchorsOK;
+  needRebuild = true;
+  state = "run";
+  $("xDir").hidden = true;
+  const anc = !anchorsOK ? "(この端末はアンカー非対応)" : cfg.anchor === "none" ? "(アンカーなし)" : "";
+  msg((cfg.mode === "test"
+    ? cfg.testDist.toFixed(1) + "m 先にコマを1枚置きました。"
+    : "コマを" + pages.length + "枚並べました。歩いて進んでください。") + anc);
+}
+
+// ---------------------------------------------------------------------
+// 配置(原点の座標で計算)。ARCore のアンカーで、置いた場所を現実に固定する
+// ---------------------------------------------------------------------
+function poseMat(pos, n) {
+  const up = new THREE.Vector3(0, 1, 0);
+  const x = new THREE.Vector3().crossVectors(up, n).normalize();
+  return new THREE.Matrix4().makeBasis(x, up, n).setPosition(pos);   // 板の表(+Z)を n に向ける
+}
+function layout() {
+  const out = [];
+  if (cfg.mode === "test") {
+    out.push({ kind: "panel", page: pages[0], s: cfg.testDist, fade: false,
+      local: poseMat(new THREE.Vector3(0, cfg.h, -cfg.testDist), new THREE.Vector3(0, 0, 1)) });
+  } else {
+    const a = cfg.face * Math.PI / 180;
+    const n = new THREE.Vector3(-cfg.side * Math.cos(a), 0, Math.sin(a));   // 通路側〜手前向き
+    pages.forEach((p, i) => {
+      const s = cfg.first + i * cfg.gap;
+      out.push({ kind: "panel", page: p, s, fade: true,
+        local: poseMat(new THREE.Vector3(cfg.lat * cfg.side, cfg.h, -s), n) });
+    });
+  }
+  const nMarks = Math.floor(cfg.markLen / cfg.markGap + 1e-6) + 1;
+  for (let k = 0; k < nMarks; k++) {
+    const s = k * cfg.markGap;
+    out.push({ kind: "mark", s, fade: false, local: new THREE.Matrix4().makeTranslation(cfg.markLat, 0.003, -s) });
+  }
+  return out;
+}
+function makePanel(page) {
+  if (!page.tex) { page.tex = new THREE.Texture(page.img); page.tex.colorSpace = THREE.SRGBColorSpace; page.tex.needsUpdate = true; }
+  const w = cfg.w, h = cfg.w * page.aspect;
+  const g = new THREE.Group();
+  const frame = new THREE.Mesh(new THREE.PlaneGeometry(w + 0.016, h + 0.016),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true }));
+  frame.position.z = -0.002;
+  const pic = new THREE.Mesh(new THREE.PlaneGeometry(w, h),
+    new THREE.MeshBasicMaterial({ map: page.tex, transparent: true, toneMapped: false }));
+  g.add(frame, pic);
+  return g;
+}
+function labelTex(text) {
+  const c = document.createElement("canvas"); c.width = 128; c.height = 64;
+  const x = c.getContext("2d");
+  x.fillStyle = "rgba(0,0,0,0.55)"; x.fillRect(0, 0, 128, 64);
+  x.fillStyle = "#ffcf6f"; x.font = "bold 40px sans-serif"; x.textAlign = "center"; x.textBaseline = "middle";
+  x.fillText(text, 64, 34);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.userData.own = true;
+  return t;
+}
+function makeMark(s) {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: 0xffcf6f });
+  g.add(new THREE.Mesh(new THREE.PlaneGeometry(0.3, 0.015).rotateX(-Math.PI / 2), mat));
+  g.add(new THREE.Mesh(new THREE.PlaneGeometry(0.015, 0.3).rotateX(-Math.PI / 2), mat.clone()));
+  const lab = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.08).rotateX(-Math.PI / 2).translate(0.2, 0, 0),
+    new THREE.MeshBasicMaterial({ map: labelTex((Math.round(s * 10) / 10) + "m"), transparent: true }));
+  g.add(lab);
+  return g;
+}
+function clearObjs() {
+  objGen++;
+  objs.forEach((o) => {
+    if (o.anchor) try { o.anchor.delete(); } catch (e) {}
+    scene.remove(o.obj);
+    o.obj.traverse((c) => {
+      if (c.geometry) c.geometry.dispose();
+      if (c.material) { if (c.material.map && c.material.map.userData.own) c.material.map.dispose(); c.material.dispose(); }
+    });
+  });
+  objs = [];
+}
+function createAnchor(frame, m) {
+  const p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+  m.decompose(p, q, s);
+  return frame.createAnchor(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w }), refSpace);
+}
+function rebuild(frame) {
+  clearObjs();
+  const g = objGen, O = originWorld(frame);
+  for (const L of layout()) {
+    const obj = L.kind === "panel" ? makePanel(L.page) : makeMark(L.s);
+    obj.matrixAutoUpdate = false;
+    scene.add(obj);
+    const o = { kind: L.kind, s: L.s, fade: L.fade, local: L.local, obj, anchor: null };
+    objs.push(o);
+    if (cfg.anchor === "each" && anchorsOK) {
+      const w = new THREE.Matrix4().multiplyMatrices(O, L.local);
+      try {
+        createAnchor(frame, w).then((a) => { if (g !== objGen) a.delete(); else o.anchor = a; }).catch(() => {});
+      } catch (e) {}
+    }
+  }
+}
+function originWorld(frame) {
+  if (origin.anchor) {
+    try {
+      const p = frame.getPose(origin.anchor.anchorSpace, refSpace);
+      if (p) return origin.cur.fromArray(p.transform.matrix);
+    } catch (e) {}
+  }
+  return origin.cur.copy(origin.mat);
+}
+
+// ---------------------------------------------------------------------
+// 毎フレーム
+// ---------------------------------------------------------------------
+const tmpM = new THREE.Matrix4(), oPos = new THREE.Vector3(), oFwd = new THREE.Vector3(), oRight = new THREE.Vector3(), oUp = new THREE.Vector3();
+function originAxes() {
+  const e = origin.cur.elements;
+  oPos.set(e[12], e[13], e[14]);
+  oRight.set(e[0], e[1], e[2]).normalize();
+  oUp.set(e[4], e[5], e[6]).normalize();
+  oFwd.set(-e[8], -e[9], -e[10]).normalize();
+}
+
+function onFrame(t, frame) {
+  if (!frame) return;
+  const vp = frame.getViewerPose(refSpace);
+  const was = tracking;
+  if (vp) {
+    viewerMat.fromArray(vp.transform.matrix);
+    camPos.set(vp.transform.position.x, vp.transform.position.y, vp.transform.position.z);
+    tracking = !vp.emulatedPosition;
+  } else tracking = false;
+  if (was && !tracking) lostCount++;
+
+  lastHit = null;
+  if (hitSource) {
+    const hs = frame.getHitTestResults(hitSource);
+    if (hs.length) {
+      const p = hs[0].getPose(refSpace);
+      if (p) { reticle.matrix.fromArray(p.transform.matrix); lastHit = new THREE.Vector3().setFromMatrixPosition(reticle.matrix); }
+    }
+  }
+  reticle.matrixAutoUpdate = false;
+  reticle.matrixWorldNeedsUpdate = true;
+  reticle.visible = !!lastHit && (state === "needStart" || state === "needDir" || measureOn);
+  if (state === "needStart" && hitSource && !lastHit) $("msg").textContent = "床を探しています。スマホをゆっくり左右に動かして床を映してください。";
+  else $("msg").textContent = msgBase;
+
+  if (origin && needOriginAnchor) {
+    needOriginAnchor = false;
+    const og = origin.gen;
+    try {
+      createAnchor(frame, origin.mat).then((a) => { if (origin && origin.gen === og) origin.anchor = a; else a.delete(); }).catch(() => {});
+    } catch (e) {}
+  }
+  if (origin && needRebuild) { needRebuild = false; rebuild(frame); }
+
+  let shown = 0, panels = 0, anchored = 0;
+  if (origin) {
+    const O = originWorld(frame);
+    originAxes();
+    const prog = camPos.clone().sub(oPos).dot(oFwd);
+    lastProg = prog;
+    for (const o of objs) {
+      let m = null;
+      if (o.anchor) {
+        try { const p = frame.getPose(o.anchor.anchorSpace, refSpace); if (p) { m = tmpM.fromArray(p.transform.matrix); anchored++; } } catch (e) {}
+      }
+      if (!m) m = tmpM.multiplyMatrices(O, o.local);
+      o.obj.matrix.copy(m);
+      o.obj.matrixWorldNeedsUpdate = true;
+      if (o.kind === "mark") { o.obj.visible = cfg.marks; continue; }
+      panels++;
+      const fade = o.fade ? clamp((cfg.ahead - (o.s - prog)) / 1.0, 0, 1) : 1;
+      o.obj.visible = fade > 0;
+      if (fade > 0) { shown++; o.obj.children.forEach((c) => { c.material.opacity = fade; }); }
+    }
+  }
+  hud(shown, panels, anchored);
+  renderer.render(scene, camera);
+}
+
+let hudT = 0;
+function hud(shown, panels, anchored) {
+  const now = performance.now();
+  if (now - hudT < 200) return;
+  hudT = now;
+  const lines = [tracking ? "追跡 OK" : '<span class="bad">追跡を見失い中</span>'];
+  if (origin) {
+    lines.push("進み " + lastProg.toFixed(2) + "m");
+    lines.push("表示 " + shown + "/" + panels + "枚");
+    const anc = !anchorsOK ? "非対応" : cfg.anchor === "none" ? "なし"
+      : cfg.anchor === "origin" ? (origin.anchor ? "原点のみ" : "原点 作成中")
+      : anchored + "/" + objs.length;
+    lines.push("アンカー " + anc);
+  }
+  lines.push("見失い " + lostCount + "回");
+  $("hud").innerHTML = lines.join("<br>");
+}
+
+// ---------------------------------------------------------------------
+// 計測: 照準の床の点(実物のテープ)と、いちばん近い仮想の目印のずれ
+//   ずれ = 仮想の目印 − 実物(前後は進む向きが+、左右は右が+)
+// ---------------------------------------------------------------------
+function setMeasure(on) {
+  measureOn = on;
+  $("xMeasure").textContent = "計測: " + (on ? "オン" : "オフ");
+  $("xMeasure").className = on ? "on" : "sub";
+  $("xUndo").hidden = !on;
+}
+$("xMeasure").addEventListener("click", () => {
+  if (!origin) { msg("先にスタート地点と向きを決めてください。"); return; }
+  setMeasure(!measureOn);
+  msg(measureOn ? "実物のテープの印に照準を合わせて、画面をタップしてください。" : "計測をやめました。");
+});
+$("xUndo").addEventListener("click", () => {
+  const r = log.pop(); saveLog();
+  $("result").hidden = false;
+  $("result").textContent = r ? "取り消しました(目印 " + r.mark_m + "m)。記録 " + log.length + " 件" : "記録がありません";
+});
+function measure() {
+  if (!lastHit) { msg("照準が床に当たっていません。テープの印の上に照準が出てからタップしてください。"); return; }
+  let best = null, bd = Infinity;
+  const mp = new THREE.Vector3();
+  for (const o of objs) {
+    if (o.kind !== "mark") continue;
+    mp.setFromMatrixPosition(o.obj.matrix);
+    const d = Math.hypot(mp.x - lastHit.x, mp.z - lastHit.z);
+    if (d < bd) { bd = d; best = o; }
+  }
+  if (!best) { msg("目印がありません。"); return; }
+  originAxes();
+  mp.setFromMatrixPosition(best.obj.matrix);
+  const diff = mp.clone().sub(lastHit), rel = lastHit.clone().sub(oPos);
+  const ef = diff.dot(oFwd) * 100, el = diff.dot(oRight) * 100, eu = diff.dot(oUp) * 100;
+  const r = {
+    session: sessNo, time: new Date().toISOString(), mode: cfg.mode,
+    anchor: anchorsOK ? cfg.anchor : "unsupported",
+    mark_m: +best.s.toFixed(2), real_fwd_m: +rel.dot(oFwd).toFixed(3), real_lat_m: +rel.dot(oRight).toFixed(3),
+    err_fwd_cm: +ef.toFixed(1), err_lat_cm: +el.toFixed(1), err_up_cm: +eu.toFixed(1),
+    err_cm: +Math.hypot(ef, el).toFixed(1), cam_prog_m: +lastProg.toFixed(2), lost_count: lostCount,
+  };
+  log.push(r); saveLog();
+  const sg = (v) => (v >= 0 ? "+" : "") + v.toFixed(1);
+  $("result").hidden = false;
+  $("result").innerHTML = "目印 " + r.mark_m + "m<br>ずれ " + r.err_cm.toFixed(1) + "cm<br>前後 " + sg(ef) +
+    " / 左右 " + sg(el) + " cm<br>記録 " + log.length + " 件";
+}
+
+// =====================================================================
+syncUI();
+checkSupport();
+if (!(await tryComicsFolder())) await usePlaceholders();
+</script>
+</body>
+</html>
