@@ -7,7 +7,7 @@
 <!--
   AR コミック WebXR 版(Android Chrome + ARCore 用)
   - 位置合わせは ARCore に任せる(WebXR immersive-ar)。床は hit-test、ずれ対策は anchors。
-  - モード: 「1枚テスト」= スタートから指定距離(初期2m)の正面に1枚 / 「ストーリー」= 連番画像を歩く経路の横に並べ、近づくとフェードイン
+  - モード: 「1枚テスト」のみ(スタートから指定距離の正面に1枚)。ストーリー(並べて出す)は一旦外した
   - 計測: 床に目印(初期1m間隔)を出し、実物のテープ印に照準を合わせてタップすると、仮想の目印とのずれ(cm)を記録。CSVで保存できる。
   - 画像: 「画像を追加」で選んだもの(ファイル名順)> comics/list.json に書いたファイル > 仮の絵 の順で使う。
       comics/list.json の例: ["001.png", "002.png", "003.png"](android/comics/ に画像と一緒に置く)
@@ -81,11 +81,6 @@
     この端末・ブラウザでは WebXR の AR が使えません。<a href="../index.html">今の方式(カメラ+センサー)で開く</a>
   </div>
 
-  <h2>モード</h2>
-  <div class="row">
-    <button id="mTest" class="sub" type="button">1枚テスト</button>
-    <button id="mStory" class="sub" type="button">ストーリー</button>
-  </div>
   <p id="modeNote" class="lbl"></p>
 
   <h2>画像</h2>
@@ -103,13 +98,6 @@
   <div id="grpTest">
     <h2>1枚テスト</h2>
     <div class="sliders" data-sl="test"></div>
-  </div>
-  <div id="grpStory">
-    <h2>ストーリー</h2>
-    <div class="sliders" data-sl="story"></div>
-    <div class="row" style="margin-top:8px">
-      <button id="sideBtn" class="sub" type="button">コマの位置: 右の壁</button>
-    </div>
   </div>
 
   <h2>位置合わせと計測</h2>
@@ -158,7 +146,6 @@
         <summary>配置の調整(指を離すと置き直します)</summary>
         <div class="sliders" data-sl="koma"></div>
         <div class="sliders" data-sl="test" data-only="test"></div>
-        <div class="sliders" data-sl="story" data-only="story"></div>
       </details>
     </div>
   </div>
@@ -196,7 +183,6 @@ try {
   if (o) {
     for (const k in RANGE) if (typeof o[k] === "number" && isFinite(o[k])) cfg[k] = clamp(o[k], RANGE[k][0], RANGE[k][1]);
     if (o.side === 1 || o.side === -1) cfg.side = o.side;
-    if (o.mode === "test" || o.mode === "story") cfg.mode = o.mode;
     if (typeof o.marks === "boolean") cfg.marks = o.marks;
     if (["each", "origin", "none"].includes(o.anchor)) cfg.anchor = o.anchor;
   }
@@ -223,16 +209,12 @@ function fmt(k) { return UNIT[k] === "°" ? Math.round(cfg[k]) + "°" : cfg[k].t
 function syncUI() {
   document.querySelectorAll("[data-k]").forEach((el) => { el.value = cfg[el.dataset.k]; });
   document.querySelectorAll("[data-o]").forEach((el) => { el.textContent = fmt(el.dataset.o); });
-  $("mTest").className = cfg.mode === "test" ? "on" : "sub";
-  $("mStory").className = cfg.mode === "story" ? "on" : "sub";
   $("grpTest").hidden = cfg.mode !== "test";
-  $("grpStory").hidden = cfg.mode !== "story";
   document.querySelectorAll("[data-only]").forEach((el) => { el.hidden = el.dataset.only !== cfg.mode; });
   $("modeNote").textContent = cfg.mode === "test"
     ? "スタートから " + cfg.testDist.toFixed(1) + "m 先の正面に、1枚目の画像を1枚だけ置きます。ずれの確認用です。"
     : "画像をファイル名順に、歩く経路の" + (cfg.side === 1 ? "右" : "左") + "側へ " + cfg.gap.toFixed(1) +
       "m おきに並べます。近づくと出てきます。";
-  $("sideBtn").textContent = "コマの位置: " + (cfg.side === 1 ? "右の壁" : "左の壁");
   $("marksBtn").textContent = $("xMarks").textContent = "床の目印: " + (cfg.marks ? "オン" : "オフ");
   $("anchorSel").value = cfg.anchor;
   $("logNote").textContent = "記録 " + log.length + " 件";
@@ -246,9 +228,6 @@ document.addEventListener("change", (e) => {
   const k = e.target.dataset && e.target.dataset.k;
   if (k && k !== "ahead" && session && origin) needRebuild = true;
 });
-$("mTest").addEventListener("click", () => { cfg.mode = "test"; save(); syncUI(); });
-$("mStory").addEventListener("click", () => { cfg.mode = "story"; save(); syncUI(); });
-$("sideBtn").addEventListener("click", () => { cfg.side = -cfg.side; save(); syncUI(); });
 $("anchorSel").addEventListener("change", (e) => { cfg.anchor = e.target.value; save(); syncUI(); });
 function toggleMarks() { cfg.marks = !cfg.marks; save(); syncUI(); }
 $("marksBtn").addEventListener("click", toggleMarks);
