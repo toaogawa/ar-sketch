@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AR スケッチ 入口</title>
 <!--
-  入口のページ。端末を調べて、合うほうへ自動で移動する。
-    WebXR の AR が使える(Android Chrome + ARCore など) → android/   (WebXR 版)
-    使えない(iPhone など)                                → index.html (カメラ+センサー版)
-  URL の末尾で、判定を使わずに指定もできる:
-    start.html?v=xr      → WebXR 版へ
-    start.html?v=sensor  → カメラ+センサー版へ
-  自動で移動しないとき用に、リンクも出しておく。
+  入口のページ。どちらの版で開くかを、自分で選べる。
+    ・端末を調べて、合うほうに「おすすめ」を付ける(WebXR の AR が使える = WebXR 版、使えない = カメラ+センサー版)
+    ・おすすめでないほうも、いつでも選べる
+    ・「自動でおすすめの版へ移動する」にチェックを入れると、次から、開いたときに自動で移動する(初期はオフ)
+  URL の末尾で、このページを通さずに指定もできる:
+    start.html?v=xr      → すぐ WebXR 版へ
+    start.html?v=sensor  → すぐカメラ+センサー版へ
 -->
 <style>
   html, body { margin: 0; background: #10151b; color: #f2f5f8;
@@ -19,37 +19,78 @@
   main { max-width: 560px; margin: 0 auto; padding: 28px 18px; display: flex; flex-direction: column; gap: 14px; }
   h1 { font-size: 1.25rem; margin: 0; }
   p { margin: 0; line-height: 1.7; color: #b9c4cf; font-size: 0.92rem; }
-  a.btn { display: block; padding: 14px; border-radius: 8px; background: #6fb1ff; color: #0b1118;
-    font-weight: 700; text-align: center; text-decoration: none; }
-  a.btn.sub { background: rgba(255,255,255,0.12); color: #f2f5f8; border: 1px solid rgba(255,255,255,0.25); }
   #status { padding: 10px 12px; border-radius: 6px; background: rgba(255,255,255,0.06); }
+  a.btn { display: flex; flex-direction: column; gap: 2px; padding: 14px; border-radius: 8px; text-decoration: none;
+    background: rgba(255,255,255,0.12); color: #f2f5f8; border: 1px solid rgba(255,255,255,0.25); font-weight: 700; }
+  a.btn small { font-weight: 400; color: #b9c4cf; font-size: 0.8rem; }
+  a.btn .tag { align-self: flex-start; background: #0b1118; color: #6fb1ff; border-radius: 4px; padding: 1px 8px;
+    font-size: 0.75rem; font-weight: 700; margin-bottom: 4px; }
+  a.btn.rec { background: #6fb1ff; color: #0b1118; border-color: #6fb1ff; }
+  a.btn.rec small { color: #1b2a3a; }
+  label.auto { display: flex; align-items: center; gap: 10px; font-size: 0.9rem; color: #cfd8e1; padding: 6px 2px; }
+  label.auto input { width: 20px; height: 20px; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
 <main>
   <h1>AR スケッチ</h1>
   <p id="status">お使いの端末を確認しています…</p>
-  <a class="btn" href="android/">WebXR 版を開く(Android / ARCore 対応のChrome)</a>
-  <a class="btn sub" href="index.html">カメラ+センサー版を開く(iPhone など)</a>
-  <p>自動で移動しない場合は、上のどちらかを選んでください。</p>
+
+  <a id="btnXr" class="btn" href="android/">
+    <span class="tag" hidden>おすすめ</span>
+    WebXR 版を開く
+    <small>Android の Chrome(ARCore 対応の端末)向け。位置合わせは端末の ARCore が行います。</small>
+  </a>
+  <a id="btnSensor" class="btn" href="index.html">
+    <span class="tag" hidden>おすすめ</span>
+    カメラ+センサー版を開く
+    <small>iPhone など、WebXR が使えない端末でも開けます。</small>
+  </a>
+
+  <label class="auto"><input id="auto" type="checkbox">自動で、おすすめの版へ移動する</label>
+  <p id="autoNote" class="note" hidden></p>
 </main>
 <script>
 (async function () {
-  const status = document.getElementById("status");
-  const q = new URLSearchParams(location.search).get("v");
-  let to = null, why = "";
-  if (q === "xr") { to = "android/"; why = "WebXR 版を開きます。"; }
-  else if (q === "sensor") { to = "index.html"; why = "カメラ+センサー版を開きます。"; }
-  else {
-    let ok = false;
-    try { ok = !!(window.isSecureContext && navigator.xr && await navigator.xr.isSessionSupported("immersive-ar")); }
-    catch (e) { ok = false; }
-    to = ok ? "android/" : "index.html";
-    why = ok ? "WebXR の AR が使える端末です。WebXR 版を開きます。"
-             : "WebXR の AR が使えない端末です。カメラ+センサー版を開きます。";
+  const $ = (id) => document.getElementById(id);
+  const AUTO_KEY = "arsketch_start_auto";
+
+  const v = new URLSearchParams(location.search).get("v");
+  if (v === "xr") { location.replace("android/"); return; }
+  if (v === "sensor") { location.replace("index.html"); return; }
+
+  let ok = false;
+  try { ok = !!(window.isSecureContext && navigator.xr && await navigator.xr.isSessionSupported("immersive-ar")); }
+  catch (e) { ok = false; }
+
+  const recBtn = ok ? $("btnXr") : $("btnSensor");
+  recBtn.classList.add("rec");
+  recBtn.querySelector(".tag").hidden = false;
+  const to = ok ? "android/" : "index.html";
+  $("status").textContent = ok
+    ? "この端末は、WebXR の AR が使えそうです。おすすめは WebXR 版です(カメラ+センサー版も選べます)。"
+    : "この端末は、WebXR の AR が使えないようです。おすすめはカメラ+センサー版です(WebXR 版も選べます)。";
+
+  const chk = $("auto");
+  let auto = false;
+  try { auto = localStorage.getItem(AUTO_KEY) === "1"; } catch (e) {}
+  chk.checked = auto;
+
+  let timer = null;
+  if (auto) {
+    $("autoNote").hidden = false;
+    $("autoNote").textContent = "1.5秒後に、おすすめの版へ移動します。止めるには、上のチェックを外してください。";
+    timer = setTimeout(function () { location.replace(to); }, 1500);
   }
-  status.textContent = why;
-  setTimeout(function () { location.replace(to); }, 900);
+  chk.addEventListener("change", function () {
+    clearTimeout(timer);
+    try { localStorage.setItem(AUTO_KEY, chk.checked ? "1" : "0"); } catch (e) {}
+    $("autoNote").hidden = false;
+    $("autoNote").textContent = chk.checked
+      ? "次にこのページを開いたときから、自動で移動します。"
+      : "自動で移動しないようにしました。";
+  });
 })();
 </script>
 </body>
